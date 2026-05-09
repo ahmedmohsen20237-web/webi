@@ -1,7 +1,8 @@
 /* ============================================================
-   app.js — منصة الوسام التعليمية
+   app.js — منصة الوسام التعليمية (محدث للهوية الزجاجية)
    جميع الميزات: تغيير الإجابة، التنقل الحر، مراجعة نهائية،
    تعديل الاختبارات، ملاحظات المعلم أثناء السؤال
+   مع تحسينات التوافق مع التصميم الزجاجي الجديد
 ============================================================ */
 
 /* ── Firebase ── */
@@ -159,13 +160,15 @@ function showToast(msg, type='success', dur=3500) {
 function showLoadingScreen() { const e=$id('loading-screen'); if(e) e.classList.remove('hidden','fade-out'); }
 function hideLoadingScreen() { const e=$id('loading-screen'); if(e){ e.classList.add('fade-out'); setTimeout(()=>e.classList.add('hidden'),600); } }
 
-/* ── Theme ── */
+/* ── Theme (متوافق مع المتغيرات الجديدة) ── */
 function initTheme() { applyTheme(localStorage.getItem('sitetheme')||'dark'); }
 function applyTheme(t) {
   const icon=$id('theme-icon');
   if(t==='light') { document.body.classList.add('light-mode'); if(icon) icon.className='fa-solid fa-moon'; }
   else            { document.body.classList.remove('light-mode'); if(icon) icon.className='fa-solid fa-sun'; }
   localStorage.setItem('sitetheme',t);
+  // تحديث أي عناصر ديناميكية قد تعتمد على الثيم (مثل المخططات)
+  if(window.renderReviewList && AppState.currentTest) renderReviewList();
 }
 function toggleTheme() { applyTheme(document.body.classList.contains('light-mode')?'dark':'light'); }
 
@@ -263,7 +266,7 @@ function saveGoal() {
   const target=parseInt($id('goal-target-input')?.value)||0;
   AppState.goal={name:name||'هدفي',target};
   localStorage.setItem('quizGoal',JSON.stringify(AppState.goal));
-  closeModal('goal-modal'); renderHome(); showToast('تم حفظ هدفك ✓');
+  closeModal('goal-modal'); renderHome(); showToast('تم حفظ الهدف ✓');
 }
 
 /* ── Delete ── */
