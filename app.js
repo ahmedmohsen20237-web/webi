@@ -1,1180 +1,1893 @@
-/* ============================================================
-   app.js — منصة الوسام التعليمية
-   جميع الميزات: تغيير الإجابة، التنقل الحر، مراجعة نهائية،
-   تعديل الاختبارات، ملاحظات المعلم أثناء السؤال
-============================================================ */
+/* ══════════════════════════════════════════════════════════════
+   منجز — app.js
+   Modules: SoundEngine · StorageManager · UserManager ·
+            TaskManager · GridManager · ExamManager ·
+            Pages · Goals · Achievements · Countdown ·
+            Analytics · UI · Onboarding · Admin
+══════════════════════════════════════════════════════════════ */
 
-/* ── Firebase ── */
-const FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyAek8K6nHzxAUiGM6ZvLfeFmzDsFjt1ABE",
-  authDomain:        "my-quiz-platform-c1a08.firebaseapp.com",
-  databaseURL:       "https://my-quiz-platform-c1a08-default-rtdb.europe-west1.firebasedatabase.app",
-  projectId:         "my-quiz-platform-c1a08",
-  storageBucket:     "my-quiz-platform-c1a08.firebasestorage.app",
-  messagingSenderId: "361533364886",
-  appId:             "1:361533364886:web:60875464941f706277c0b7"
-};
-firebase.initializeApp(FIREBASE_CONFIG);
-const db   = firebase.database();
-const auth = firebase.auth();
+'use strict';
 
-/* ── Auth State ── */
-let currentUser   = null;
-let isAdminMode   = false;
-let authListeners = [];
-
-function onAuthStateChange(cb) { authListeners.push(cb); }
-
-auth.onAuthStateChanged(user => {
-  currentUser = user;
-  isAdminMode = !!user;
-  if (user) {
-    sessionStorage.setItem('adminMode','1');
-    document.body.classList.add('admin-mode');
-  } else {
-    sessionStorage.removeItem('adminMode');
-    document.body.classList.remove('admin-mode');
-  }
-  authListeners.forEach(cb => cb(user, isAdminMode));
-});
-
-/* ── Auth Functions ── */
-async function adminSignIn(email, pw) {
-  try { return await auth.signInWithEmailAndPassword(email, pw); }
-  catch(e) { throw translateAuthError(e); }
-}
-async function adminSignOut() { await auth.signOut(); }
-
-function translateAuthError(e) {
-  const m = {
-    'auth/invalid-email':'البريد الإلكتروني غير صالح',
-    'auth/user-not-found':'المستخدم غير موجود',
-    'auth/wrong-password':'كلمة المرور غير صحيحة',
-    'auth/invalid-credential':'بيانات الاعتماد غير صحيحة',
-    'auth/too-many-requests':'تم تجاوز عدد المحاولات',
-    'auth/network-request-failed':'خطأ في الشبكة',
-    'auth/user-disabled':'تم تعطيل هذا الحساب'
-  };
-  const err = new Error(m[e.code] || 'حدث خطأ في المصادقة');
-  err.code = e.code; return err;
-}
-
-/* ── DB Helpers ── */
-async function dbSaveQuiz(data) {
-  if (!currentUser) throw new Error('يجب تسجيل الدخول كأدمن');
-  const ref = await db.ref('quizzes').push(data);
-  return ref.key;
-}
-async function dbUpdateQuiz(id, data) {
-  if (!currentUser) throw new Error('يجب تسجيل الدخول كأدمن');
-  await db.ref('quizzes/' + id).set(data);
-}
-async function dbDeleteQuiz(id) {
-  if (!currentUser) throw new Error('يجب تسجيل الدخول كأدمن');
-  await db.ref('quizzes/' + id).remove();
-}
-function dbListenQuizzes(cb, errCb) {
-  db.ref('quizzes').on('value', snap => {
-    const d = snap.val();
-    cb(d ? Object.entries(d).map(([fid,qd])=>({...qd,firebaseId:fid,id:fid})) : []);
-  }, e => { console.error(e); errCb && errCb(e); });
-}
-async function dbSaveAnalytics(qid, data) {
-  try {
-    const uid = currentUser ? currentUser.uid : 'anon_'+Date.now();
-    await db.ref(`analytics/${qid}/${uid}`).set({...data, timestamp:Date.now()});
-  } catch(e) { console.warn('Analytics:', e); }
-}
-
-/* ============================================================
-   STATE
-============================================================ */
-const AppState = {
-  tests:         [],
-  errors:        JSON.parse(localStorage.getItem('quizErrors')    || '[]'),
-  goal:          JSON.parse(localStorage.getItem('quizGoal')      || 'null'),
-  scores:        JSON.parse(localStorage.getItem('quizScores')    || '{}'),
-  adminSettings: JSON.parse(localStorage.getItem('adminSettings') || '{"categorizedErrors":false,"showNotesLive":true}'),
-  progress:      JSON.parse(localStorage.getItem('quizProgress')  || '{}'),
-
-  /* Quiz session */
-  currentTest:   null,
-  currentQ:      0,
-  userAnswers:   [],  /* null=لم يُجب، -1=تخطي، رقم=إجابة */
-  timerInterval: null,
-  elapsedSecs:   0,
-
-  /* Admin */
-  builderQuestions: [],
-  parsedQuestions:  [],
-  editingQuizId:    null,
-  editQuestions:    [],
-  pendingDeleteId:  null,
-  deleteMode:       'test',
-
-  /* Pomodoro */
-  pomodoro: { running:false, phase:'focus', focusMins:25, breakMins:5, totalSessions:4, currentSession:1, completedSessions:0, remaining:25*60, interval:null },
-
-  /* Tools */
-  tools: {
-    cd: { running:false, interval:null, remaining:0, total:0 },
-    sw: { running:false, interval:null, elapsed:0, laps:[] },
-    qt: { running:false, interval:null, remaining:0, qIdx:0, total:0, perQ:0 }
-  }
+/* ── helpers ── */
+const dk = d => d.toISOString().slice(0,10);
+const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const uid = () => '_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const timeAgo = ts => {
+  if(!ts) return '—';
+  const diff = Date.now()-ts, m = Math.floor(diff/60000);
+  if(m<1) return I18n.t('now');
+  if(m<60) return I18n.t('minsAgo').replace('{n}',m);
+  const h = Math.floor(m/60);
+  if(h<24) return I18n.t('hoursAgo').replace('{n}',h);
+  return I18n.t('daysAgo').replace('{n}',Math.floor(h/24));
 };
 
-/* ============================================================
-   UTILITIES
-============================================================ */
-function escapeHtml(s) {
-  if (!s && s!==0) return '';
-  return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-function fmtTime(s) { const t=Math.max(0,s); return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0'); }
-function $id(id) { return document.getElementById(id); }
-function setText(id,v) { const e=$id(id); if(e) e.textContent=v; }
-function setVal(id,v)  { const e=$id(id); if(e) e.value=v; }
-function openModal(id)  { const e=$id(id); if(e) e.classList.add('open'); }
-function closeModal(id) {
-  const e=$id(id);
-  if(e){ e.classList.add('closing'); setTimeout(()=>e.classList.remove('open','closing'),200); }
-}
-function persistAll() {
-  localStorage.setItem('quizScores', JSON.stringify(AppState.scores));
-  localStorage.setItem('quizErrors', JSON.stringify(AppState.errors));
-}
-
-/* ── Toast ── */
-const TICONS = { success:'✅', error:'❌', info:'ℹ️', warning:'⚠️' };
-function showToast(msg, type='success', dur=3500) {
-  const tc=$id('toast-container'); if(!tc) return;
-  const t=document.createElement('div');
-  t.className='toast '+type;
-  t.innerHTML=`<span class="toast-icon">${TICONS[type]||''}</span><span>${escapeHtml(msg)}</span>`;
-  tc.appendChild(t);
-  setTimeout(()=>{ t.style.animation='toastOut .3s ease forwards'; setTimeout(()=>t.remove(),300); },dur);
-}
-
-/* ── Loading ── */
-function showLoadingScreen() { const e=$id('loading-screen'); if(e) e.classList.remove('hidden','fade-out'); }
-function hideLoadingScreen() { const e=$id('loading-screen'); if(e){ e.classList.add('fade-out'); setTimeout(()=>e.classList.add('hidden'),600); } }
-
-/* ── Theme ── */
-function initTheme() { applyTheme(localStorage.getItem('sitetheme')||'dark'); }
-function applyTheme(t) {
-  const icon=$id('theme-icon');
-  if(t==='light') { document.body.classList.add('light-mode'); if(icon) icon.className='fa-solid fa-moon'; }
-  else            { document.body.classList.remove('light-mode'); if(icon) icon.className='fa-solid fa-sun'; }
-  localStorage.setItem('sitetheme',t);
-}
-function toggleTheme() { applyTheme(document.body.classList.contains('light-mode')?'dark':'light'); }
-
-/* ── Modal backdrop ── */
-document.addEventListener('click', e => {
-  if(e.target.classList.contains('modal-overlay') && e.target.classList.contains('open') && e.target.id!=='admin-login-modal')
-    closeModal(e.target.id);
-});
-
-/* ============================================================
-   NAVIGATION
-============================================================ */
-function showPage(name) {
-  if(name==='admin' && !isAdminMode) { openAdminLoginModal(); return; }
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-  const t=$id('page-'+name); if(!t) return;
-  t.classList.add('active');
-  const inits = { home:renderHome, errors:renderErrors, admin:()=>{renderManageList();loadAdminSettings();}, tools:initToolsPage, results:()=>{} };
-  if(inits[name]) inits[name]();
-  window.scrollTo({top:0,behavior:'smooth'});
-}
-
-/* ============================================================
-   HOME
-============================================================ */
-function renderHome() {
-  const {tests,scores,errors,goal} = AppState;
-  const done=Object.keys(scores).length;
-  const vals=Object.values(scores);
-  const avg=vals.length?Math.round(vals.reduce((a,b)=>a+b,0)/vals.length):null;
-  setText('stat-total', tests.length);
-  setText('stat-done',  done);
-  setText('stat-avg',   avg!==null?avg+'%':'—');
-  setText('stat-errors',errors.length);
-  renderGoal(done);
-  renderTestsGrid();
-}
-function renderGoal(done) {
-  const g=AppState.goal; if(!g) return;
-  const pct=g.target?Math.min(100,Math.round(done/g.target*100)):0;
-  setText('goal-title',    g.name||'هدفي');
-  setText('goal-desc',     pct+'% من الهدف مكتمل');
-  setText('goal-done-lbl', done+' مكتمل');
-  setText('goal-target-lbl','الهدف: '+(g.target||'—'));
-  const b=$id('goal-bar'); if(b) b.style.width=pct+'%';
-}
-function renderTestsGrid() {
-  const {tests,scores}=AppState;
-  const grid=$id('tests-grid'); if(!grid) return;
-  const frag=document.createDocumentFragment();
-  if(!tests.length) {
-    const e=document.createElement('div'); e.className='quizzes-empty';
-    e.innerHTML='<div class="empty-icon">📭</div><h3>لا توجد اختبارات بعد</h3><p>أضف اختباراً جديداً من لوحة الإدارة</p>';
-    frag.appendChild(e);
-  }
-  tests.forEach((t,idx)=>{
-    const sc=scores[t.id];
-    let badge='<span class="test-badge badge-new">جديد</span>';
-    let bar='';
-    if(sc!==undefined) {
-      badge=sc>=70?'<span class="test-badge badge-done">مكتمل ✓</span>':'<span class="test-badge badge-retry">راجع أخطاءك</span>';
-      const cls=sc>=80?'fill-green':sc>=60?'fill-yellow':'fill-red';
-      bar=`<div class="test-score-bar"><div class="test-score-fill ${cls}" style="width:${sc}%"></div></div>`;
+/* ══════════════════════════════════════════════
+   I18N
+══════════════════════════════════════════════ */
+const I18n = (() => {
+  let _lang = 'ar';
+  const strings = {
+    ar: {
+      appName:'منجز', home:'الرئيسية', stats:'الإحصائيات',
+      achievements:'الإنجازات', admin:'المدير',
+      pages:'المجلدات', newPage:'مجلد جديد', settings:'الإعدادات',
+      task:'مهام', visual:'بصري', exam:'اختبارات',
+      done:'مكتمل', pending:'قيد التنفيذ', all:'الكل',
+      save:'حفظ', cancel:'إلغاء', delete:'حذف', edit:'تعديل',
+      add:'إضافة', create:'إنشاء', back:'رجوع',
+      name:'الاسم', notes:'ملاحظات', score:'النتيجة',
+      difficulty:'الصعوبة', easy:'سهل', medium:'متوسط', hard:'صعب',
+      complete:'اكتمل', inProgress:'قيد الدراسة', favorite:'مفضل',
+      retry:'إعادة', reset:'إعادة ضبط', open:'فتح',
+      now:'الآن', minsAgo:'منذ {n} دقيقة', hoursAgo:'منذ {n} ساعة', daysAgo:'منذ {n} يوم',
+      streak:'أيام متتالية', dailyGoal:'الهدف اليومي',
+      smartSession:'جلسة ذكية', weakFirst:'الأضعف أولاً',
+      random:'عشوائي', analytics:'التحليلات',
+      bulkImport:'استيراد دفعي', addExam:'إضافة اختبار',
+      examTracker:'متابعة الاختبارات', noExams:'لا توجد اختبارات بعد',
+      addFirstExam:'أضف أول اختبار للبدء',
+      greetMorning:'صباح الإنتاجية', greetAfternoon:'مساء النجاح', greetEvening:'ليلة الإنجاز',
+      welcomeBack:'مرحباً مجدداً', hello:'مرحباً',
+      lastOpened:'آخر فتح', link:'الرابط',
+      enterLink:'أدخل رابط Google Forms...',
+      enterTitle:'عنوان الاختبار...',
+      bulkLinksHint:'أدخل كل رابط في سطر منفصل\nيمكنك إضافة عنوان بعد الرابط مفصولاً بـ |',
+      sessionComplete:'اكتملت الجلسة!',
+      excellent:'ممتاز!', great:'رائع!', good:'جيد',
+      noScore:'—', pct:'%',
+      confirmDelete:'هل تريد حذف هذا العنصر؟',
+    },
+    en: {
+      appName:'Munajez', home:'Home', stats:'Statistics',
+      achievements:'Achievements', admin:'Admin',
+      pages:'Folders', newPage:'New Folder', settings:'Settings',
+      task:'Tasks', visual:'Visual', exam:'Exams',
+      done:'Done', pending:'Pending', all:'All',
+      save:'Save', cancel:'Cancel', delete:'Delete', edit:'Edit',
+      add:'Add', create:'Create', back:'Back',
+      name:'Name', notes:'Notes', score:'Score',
+      difficulty:'Difficulty', easy:'Easy', medium:'Medium', hard:'Hard',
+      complete:'Complete', inProgress:'In Progress', favorite:'Favorite',
+      retry:'Retry', reset:'Reset', open:'Open',
+      now:'Now', minsAgo:'{n}m ago', hoursAgo:'{n}h ago', daysAgo:'{n}d ago',
+      streak:'day streak', dailyGoal:'Daily Goal',
+      smartSession:'Smart Session', weakFirst:'Weakest First',
+      random:'Random', analytics:'Analytics',
+      bulkImport:'Bulk Import', addExam:'Add Exam',
+      examTracker:'Exam Tracker', noExams:'No exams yet',
+      addFirstExam:'Add your first exam to get started',
+      greetMorning:'Good morning', greetAfternoon:'Good afternoon', greetEvening:'Good evening',
+      welcomeBack:'Welcome back', hello:'Hello',
+      lastOpened:'Last opened', link:'Link',
+      enterLink:'Enter Google Forms link...',
+      enterTitle:'Exam title...',
+      bulkLinksHint:'Enter each link on a separate line\nYou can add a title after the link separated by |',
+      sessionComplete:'Session complete!',
+      excellent:'Excellent!', great:'Great!', good:'Good',
+      noScore:'—', pct:'%',
+      confirmDelete:'Delete this item?',
     }
-    const card=document.createElement('div');
-    card.className='test-card'; card.onclick=()=>startQuiz(t.firebaseId);
-    card.innerHTML=`
-      <button class="test-card-del admin-only-inline" onclick="event.stopPropagation();requestDeleteTest('${t.firebaseId}')">🗑️ حذف</button>
-      <div class="test-card-top"><div class="test-num">${idx+1}</div>${badge}</div>
-      <div class="test-title">${escapeHtml(t.name)}</div>
-      <div class="test-meta">
-        <span>📝 ${t.questions?.length||0} سؤال</span>
-        <span>⏱️ ${t.timeLimit?t.timeLimit+' دقيقة':'بلا حد'}</span>
-        ${t.subject?`<span>📚 ${escapeHtml(t.subject)}</span>`:''}
-        ${sc!==undefined?`<span style="color:${sc>=70?'var(--green)':sc>=50?'var(--accent)':'var(--red)'}">🎯 ${sc}%</span>`:''}
-      </div>${bar}`;
-    frag.appendChild(card);
-  });
-  if(isAdminMode) {
-    const a=document.createElement('div'); a.className='add-card'; a.onclick=()=>showPage('admin');
-    a.innerHTML='<span style="font-size:1.4rem">➕</span><span>أضف اختباراً جديداً</span>';
-    frag.appendChild(a);
-  }
-  grid.innerHTML=''; grid.appendChild(frag);
-}
-
-/* ── Goal ── */
-function openGoalModal() {
-  const g=AppState.goal;
-  if(g){ setVal('goal-name-input',g.name||''); setVal('goal-target-input',g.target||''); }
-  openModal('goal-modal');
-}
-function saveGoal() {
-  const name=$id('goal-name-input')?.value.trim();
-  const target=parseInt($id('goal-target-input')?.value)||0;
-  AppState.goal={name:name||'هدفي',target};
-  localStorage.setItem('quizGoal',JSON.stringify(AppState.goal));
-  closeModal('goal-modal'); renderHome(); showToast('تم حفظ هدفك ✓');
-}
-
-/* ── Delete ── */
-function requestDeleteTest(fid) {
-  if(!isAdminMode){ showToast('يجب تسجيل الدخول كأدمن','error'); return; }
-  const t=AppState.tests.find(x=>x.firebaseId===fid); if(!t) return;
-  AppState.pendingDeleteId=fid; AppState.deleteMode='test';
-  setText('delete-modal-name',t.name); openModal('delete-modal');
-}
-function clearErrors() {
-  if(!AppState.errors.length) return;
-  AppState.deleteMode='errors';
-  setText('delete-modal-name','جميع الأخطاء المسجّلة'); openModal('delete-modal');
-}
-async function confirmDeleteTest() {
-  closeModal('delete-modal');
-  if(AppState.deleteMode==='test' && AppState.pendingDeleteId) {
-    try {
-      await dbDeleteQuiz(AppState.pendingDeleteId);
-      delete AppState.scores[AppState.pendingDeleteId];
-      AppState.errors=AppState.errors.filter(e=>e.testId!==AppState.pendingDeleteId);
-      persistAll(); showToast('تم حذف الاختبار نهائياً');
-    } catch(e){ showToast(e.message||'فشل الحذف','error'); }
-  } else if(AppState.deleteMode==='errors') {
-    AppState.errors=[]; localStorage.setItem('quizErrors','[]');
-    renderErrors(); renderHome(); showToast('تم مسح مجلد الأخطاء');
-  }
-  AppState.pendingDeleteId=null;
-}
-
-/* ── Firebase Listener ── */
-function attachFirebaseListener() {
-  showLoadingScreen();
-  dbListenQuizzes(tests=>{
-    AppState.tests=tests; renderHome();
-    const ap=$id('page-admin'), mt=$id('admin-manage');
-    if(ap?.classList.contains('active') && mt?.classList.contains('active')) renderManageList();
-    hideLoadingScreen();
-  }, ()=>{ showToast('خطأ في الاتصال بقاعدة البيانات','error'); hideLoadingScreen(); });
-}
-
-/* ── Init ── */
-function initApp() {
-  initTheme(); updatePomoSettings(); attachFirebaseListener();
-  onAuthStateChange((user,isAdmin)=>{
-    applyAdminUI(user,isAdmin);
-    if($id('page-home')?.classList.contains('active')) renderHome();
-  });
-}
-document.addEventListener('DOMContentLoaded', initApp);
-
-/* ============================================================
-   ADMIN AUTH
-============================================================ */
-function applyAdminUI(user,isAdmin) {
-  const bar=$id('admin-mode-bar'), lb=$id('admin-login-btn'), li=$id('admin-lock-icon'), ab=$id('nav-admin-btn');
-  document.querySelectorAll('.admin-only-inline').forEach(e=>e.style.display=isAdmin?'':'none');
-  if(isAdmin) {
-    document.body.classList.add('admin-mode');
-    bar?.classList.add('visible'); lb?.classList.add('active-admin');
-    if(li) li.className='fa-solid fa-unlock'; if(lb) lb.title='وضع الأدمن — انقر للخروج';
-    if(ab) ab.style.display='flex'; setText('admin-user-email',user?.email||'');
-  } else {
-    document.body.classList.remove('admin-mode');
-    bar?.classList.remove('visible'); lb?.classList.remove('active-admin');
-    if(li) li.className='fa-solid fa-lock'; if(lb) lb.title='دخول الأدمن';
-    if(ab) ab.style.display='none';
-  }
-}
-function openAdminLoginModal() {
-  if(isAdminMode){ if(confirm('هل تريد تسجيل الخروج؟')) logoutAdmin(); return; }
-  setVal('admin-email-input',''); setVal('admin-password-input','');
-  const e=$id('admin-login-error'); if(e){ e.style.display='none'; e.textContent=''; }
-  openModal('admin-login-modal'); setTimeout(()=>$id('admin-email-input')?.focus(),120);
-}
-function handleAdminLogin() { openAdminLoginModal(); }
-async function verifyAdminLogin() {
-  const email=$id('admin-email-input')?.value.trim();
-  const pw=$id('admin-password-input')?.value;
-  const btn=$id('admin-login-submit-btn');
-  if(!email||!pw){ showLoginError('يرجى إدخال البريد وكلمة المرور'); return; }
-  if(btn){ btn.disabled=true; btn.textContent='جارٍ التحقق...'; }
-  try {
-    await adminSignIn(email,pw);
-    closeModal('admin-login-modal'); showToast('✅ مرحباً في وضع الأدمن');
-  } catch(e){ showLoginError(e.message||'فشل تسجيل الدخول'); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent='دخول'; } }
-}
-function showLoginError(msg) {
-  const e=$id('admin-login-error'); if(e){ e.textContent='❌ '+msg; e.style.display='block'; }
-}
-async function logoutAdmin() {
-  try{ await adminSignOut(); showPage('home'); showToast('🔒 تم تسجيل الخروج','info'); }
-  catch(e){ showToast('فشل تسجيل الخروج','error'); }
-}
-document.addEventListener('keydown',e=>{
-  const m=$id('admin-login-modal');
-  if(e.key==='Enter' && m?.classList.contains('open')) verifyAdminLogin();
-});
-
-/* ── Admin Settings ── */
-function loadAdminSettings() {
-  const s=AppState.adminSettings;
-  const c=$id('setting-categorized-errors'), n=$id('setting-show-notes-live');
-  if(c) c.checked=!!s.categorizedErrors;
-  if(n) n.checked=s.showNotesLive!==false;
-}
-function saveAdminSettings() {
-  AppState.adminSettings.categorizedErrors=$id('setting-categorized-errors')?.checked||false;
-  AppState.adminSettings.showNotesLive=$id('setting-show-notes-live')?.checked!==false;
-  localStorage.setItem('adminSettings',JSON.stringify(AppState.adminSettings));
-  showToast('تم حفظ الإعدادات ✓');
-}
-function switchAdminTab(tab,ev) {
-  document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.admin-tab-content').forEach(c=>c.classList.remove('active'));
-  if(ev?.currentTarget) ev.currentTarget.classList.add('active');
-  $id('admin-'+tab)?.classList.add('active');
-  if(tab==='manage') renderManageList();
-  if(tab==='settings') loadAdminSettings();
-}
-
-/* ── Manage List ── */
-function renderManageList() {
-  const c=$id('manage-list'); if(!c) return;
-  const {tests,scores}=AppState;
-  if(!tests.length){ c.innerHTML='<div class="empty-state"><div class="icon">📭</div><p>لا توجد اختبارات بعد</p></div>'; return; }
-  const w=document.createElement('div'); w.style.cssText='display:flex;flex-direction:column;gap:8px;';
-  tests.forEach(t=>{
-    const sc=scores[t.id];
-    const item=document.createElement('div'); item.className='manage-item';
-    item.innerHTML=`
-      <div class="manage-item-info">
-        <div class="manage-item-name">${escapeHtml(t.name)}</div>
-        <div class="manage-item-meta">${t.questions?.length||0} سؤال • ${t.timeLimit||0} دقيقة${sc!==undefined?' • آخر درجة: '+sc+'%':''}</div>
-      </div>
-      <div class="manage-item-actions">
-        <button onclick="startQuiz('${t.firebaseId}')" class="btn btn-primary" style="font-size:0.8rem;padding:8px 12px">▶️ تشغيل</button>
-        <button onclick="openEditQuiz('${t.firebaseId}')" class="btn btn-secondary" style="font-size:0.8rem;padding:8px 12px;color:var(--accent)">✏️ تعديل</button>
-        <button onclick="requestDeleteTest('${t.firebaseId}')" class="btn btn-secondary" style="font-size:0.8rem;padding:8px 12px;color:var(--red)">🗑️ حذف</button>
-      </div>`;
-    w.appendChild(item);
-  });
-  c.innerHTML=''; c.appendChild(w);
-}
-
-/* ============================================================
-   QUIZ BUILDER (إضافة/تعديل)
-============================================================ */
-function addQuestionBuilder(data) {
-  AppState.builderQuestions.push(data||{text:'',choices:['','','',''],correct:0,correctAnswers:[0],multiCorrect:false,note:'',image:''});
-  renderBuilder();
-}
-function renderBuilderTo(questions, containerId) {
-  const container=$id(containerId); if(!container) return;
-  const letters=['أ','ب','ج','د'];
-  const frag=document.createDocumentFragment();
-  questions.forEach((q,qi)=>{
-    const item=document.createElement('div'); item.className='q-builder-item';
-    const isMulti=q.multiCorrect;
-    let ch='';
-    q.choices.forEach((c,ci)=>{
-      const iType=isMulti?'checkbox':'radio', iClass=isMulti?'choice-checkbox':'choice-radio';
-      const checked=isMulti?(Array.isArray(q.correctAnswers)&&q.correctAnswers.includes(ci)):(q.correct===ci);
-      ch+=`<div class="choice-builder-row">
-        <input type="${iType}" class="${iClass}" name="bq-correct-${containerId}-${qi}" ${checked?'checked':''}
-          onchange="builderSetCorrect('${containerId}',${qi},${ci},this.checked,${isMulti})"/>
-        <input class="form-input" placeholder="${letters[ci]||ci+1}..." value="${escapeHtml(c||'')}"
-          oninput="getBuilderQuestions('${containerId}')[${qi}].choices[${ci}]=this.value;updateAnswerMapIfExists()"
-          style="flex:1"/>
-      </div>`;
+  };
+  function t(key) { return (strings[_lang]||strings.ar)[key] || key; }
+  function setLang(lang) {
+    _lang = lang;
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang==='ar'?'rtl':'ltr';
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const k = el.dataset.i18n;
+      if(k) el.textContent = t(k);
     });
-    const imgPreview = q.image
-      ? `<div class="q-image-preview-wrap" id="${containerId}-imgwrap-${qi}">
-           <img src="${q.image}" class="q-image-preview" alt="صورة السؤال"/>
-           <button class="q-img-remove-btn" onclick="removeBuilderImage('${containerId}',${qi})" title="حذف الصورة">✕</button>
-         </div>`
-      : `<div class="q-image-preview-wrap" id="${containerId}-imgwrap-${qi}" style="display:none">
-           <img src="" class="q-image-preview" alt="صورة السؤال"/>
-           <button class="q-img-remove-btn" onclick="removeBuilderImage('${containerId}',${qi})" title="حذف الصورة">✕</button>
-         </div>`;
-    item.innerHTML=`
-      <div class="q-builder-header">
-        <span class="q-builder-num">سؤال ${qi+1} ${isMulti?'<span class="multi-badge">متعدد الإجابات</span>':''}</span>
-        <div class="q-builder-actions">
-          <button class="q-multi-btn ${isMulti?'active':''}" onclick="toggleBuilderMulti('${containerId}',${qi})" title="تفعيل/إلغاء تعدد الإجابات الصحيحة">
-            ${isMulti?'☑️ متعدد':'☐ إجابة واحدة'}
-          </button>
-          <button class="q-del-btn" onclick="deleteBuilderQ('${containerId}',${qi})">حذف</button>
+    document.querySelectorAll('[data-i18n-ph]').forEach(el => {
+      el.placeholder = t(el.dataset.i18nPh);
+    });
+  }
+  function getLang() { return _lang; }
+  return { t, setLang, getLang };
+})();
+
+/* ══════════════════════════════════════════════
+   SOUND ENGINE
+══════════════════════════════════════════════ */
+const SoundEngine = (() => {
+  let ctx = null;
+  function _ctx() {
+    if(!ctx) { try { ctx = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){} }
+    return ctx;
+  }
+  function _tone(f1,f2,vol,dur,wave='sine') {
+    const c = _ctx(); if(!c) return;
+    try {
+      const osc=c.createOscillator(), gain=c.createGain();
+      osc.type=wave; osc.connect(gain); gain.connect(c.destination);
+      osc.frequency.setValueAtTime(f1,c.currentTime);
+      if(f2!==f1) osc.frequency.exponentialRampToValueAtTime(f2,c.currentTime+dur*.6);
+      gain.gain.setValueAtTime(vol,c.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001,c.currentTime+dur);
+      osc.start(); osc.stop(c.currentTime+dur);
+    } catch(e){}
+  }
+  function fill()    { _tone(600,950,.12,.06); }
+  function unfill()  { _tone(400,260,.10,.04); }
+  function taskDone(){ _tone(700,1100,.15,.06); setTimeout(()=>_tone(880,1200,.1,.04),100); }
+  function examOpen(){ _tone(440,660,.1,.08); }
+  function examDone(){ _tone(660,1100,.18,.08); setTimeout(()=>_tone(880,1320,.12,.06),120); setTimeout(()=>_tone(1100,1500,.08,.05),240); }
+  function add()     { _tone(500,650,.08,.04); }
+  function nav()     { _tone(350,420,.07,.03); }
+  function success() { _tone(660,880,.2,.07); setTimeout(()=>_tone(880,1100,.15,.05),150); setTimeout(()=>_tone(1100,1320,.1,.04),280); }
+  function error_s() { _tone(300,200,.15,.05,'square'); }
+  function close_s() { _tone(400,320,.07,.03); }
+  return { fill, unfill, taskDone, examOpen, examDone, add, nav, success, error:error_s, close:close_s };
+})();
+
+/* ══════════════════════════════════════════════
+   STORAGE MANAGER
+══════════════════════════════════════════════ */
+const StorageManager = (() => {
+  const KEY = 'mnj_v3';
+  const ADMIN_HASH = btoa('Admin@Engaz2026');
+  const MASTER_KEY = 'MnJz@Admin2026';
+
+  function defaultUser(name) {
+    return {
+      id: uid(), name,
+      avatar: name.charAt(0).toUpperCase(),
+      color: ['#20d6a8','#3d8ef0','#8b5cf6','#f59e0b','#e879a0','#f97316'][Math.floor(Math.random()*6)],
+      createdAt: Date.now(), lastActive: Date.now(),
+      pages: [],
+      soundEnabled: true, darkMode: true,
+      lang: 'ar', achievements: {}
+    };
+  }
+  function defaultPage(name, mode, opts={}) {
+    const base = {
+      id: uid(), name, mode,
+      createdAt: Date.now(), activity: {},
+      dailyGoal: opts.goal||0, goalStartFrom: 0,
+      pin: '', recoveryBook: ''
+    };
+    if(mode==='task')  return {...base, tasks:[]};
+    if(mode==='exam')  return {...base, exams:[], streak:0, lastStudyDate:'', studyHistory:[]};
+    return {...base, cells:Array(opts.count||30).fill(0), shape:opts.shape||'circle', showNums:false, numSize:11, customColor:'#ff6b6b'};
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if(raw) {
+        const s = JSON.parse(raw);
+        if(!s.users) s.users={};
+        if(!s.currentUser) s.currentUser=null;
+        return s;
+      }
+    } catch(e){}
+    return { users:{}, currentUser:null };
+  }
+  function save(state) {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e){}
+  }
+  return { load, save, defaultUser, defaultPage, ADMIN_HASH, MASTER_KEY };
+})();
+
+/* ══════════════════════════════════════════════
+   USER MANAGER
+══════════════════════════════════════════════ */
+const UserManager = (() => {
+  let state = StorageManager.load();
+  const getUsers    = () => Object.values(state.users);
+  const getCurrent  = () => state.users[state.currentUser]||null;
+  const createUser  = name => { const u=StorageManager.defaultUser(name); state.users[u.id]=u; state.currentUser=u.id; _save(); return u; };
+  const switchUser  = id => { if(!state.users[id])return false; state.currentUser=id; state.users[id].lastActive=Date.now(); _save(); return true; };
+  const updateUser  = patch => { const u=getCurrent(); if(!u)return; Object.assign(u,patch); _save(); };
+  const deleteUser  = id => { delete state.users[id]; if(state.currentUser===id){ const k=Object.keys(state.users); state.currentUser=k.length?k[0]:null; } _save(); };
+  const getSetting  = (k,def) => { const u=getCurrent(); return u?(u[k]!==undefined?u[k]:def):def; };
+  const setSetting  = (k,v) => { const u=getCurrent(); if(u){u[k]=v;_save();} };
+  const getState    = () => state;
+  function _save() { StorageManager.save(state); }
+  return { getUsers, getCurrent, createUser, switchUser, updateUser, deleteUser, getSetting, setSetting, getState };
+})();
+
+/* ══════════════════════════════════════════════
+   TASK MANAGER
+══════════════════════════════════════════════ */
+const TaskManager = (() => {
+  function _pg(pgId) {
+    const u=UserManager.getCurrent(); if(!u) return null;
+    return (u.pages||[]).find(p=>p.id===pgId)||null;
+  }
+  function getTasks(pgId) { const pg=_pg(pgId); return pg?(pg.tasks||[]): []; }
+  function addTask(pgId, data) {
+    const pg=_pg(pgId); if(!pg||pg.mode!=='task') return null;
+    const t = { id:uid(), name:data.name||I18n.t('task'), desc:data.desc||'', priority:data.priority||'low', category:data.category||'', due:data.due||'', done:false, createdAt:Date.now(), completedAt:null };
+    pg.tasks.push(t); UserManager.updateUser({}); return t;
+  }
+  function updateTask(pgId,tid,patch) { const pg=_pg(pgId); if(!pg) return; const t=pg.tasks.find(t=>t.id===tid); if(!t) return; Object.assign(t,patch); if(patch.done!==undefined){t.completedAt=patch.done?Date.now():null;} UserManager.updateUser({}); }
+  function deleteTask(pgId,tid) { const pg=_pg(pgId); if(!pg) return; pg.tasks=pg.tasks.filter(t=>t.id!==tid); UserManager.updateUser({}); }
+  function toggleTask(pgId,tid) {
+    const pg=_pg(pgId); if(!pg) return false;
+    const t=pg.tasks.find(t=>t.id===tid); if(!t) return false;
+    t.done=!t.done; t.completedAt=t.done?Date.now():null;
+    const today=dk(new Date()); pg.activity=pg.activity||{};
+    if(t.done) pg.activity[today]=(pg.activity[today]||0)+1;
+    UserManager.updateUser({}); return t.done;
+  }
+  function bulkAdd(pgId, lines) { lines.forEach(name=>{ if(name.trim()) addTask(pgId,{name:name.trim()}); }); }
+  function getStats(pgId) {
+    const tasks=getTasks(pgId);
+    const done=tasks.filter(t=>t.done).length, total=tasks.length;
+    return { done, total, pct:total>0?Math.round(done/total*100):0, overdue:tasks.filter(t=>!t.done&&t.due&&new Date(t.due)<new Date()).length, remaining:total-done };
+  }
+  return { getTasks, addTask, updateTask, deleteTask, toggleTask, bulkAdd, getStats };
+})();
+
+/* ══════════════════════════════════════════════
+   GRID MANAGER (Visual Mode)
+══════════════════════════════════════════════ */
+const GridManager = (() => {
+  let selColor=1, selShape='circle', gridSz=44, customColor='#ff6b6b';
+  let undoStack=[], redoStack=[], undoTimer=null;
+  let _isScrolling=false, _scrollTimer=null;
+  const COLORS=['#20d6a8','#ef4444','#8b5cf6','#f59e0b','#3d8ef0','#f97316','#06b6d4','#e879a0','#6366f1','#14b8a6','#eab308','#a855f7'];
+
+  function getColors() { return COLORS; }
+  function getCells(pg) { return pg?(pg.cells||[]): []; }
+
+  function toggleCell(pg, idx, el) {
+    if(_isScrolling) return;
+    const cells=pg.cells, prev=cells[idx];
+    if(!prev||prev===0) {
+      const val=selColor==='custom'?'custom':selColor;
+      const before=cells.slice(); cells[idx]=val; _pushUndo(before,pg);
+      _applyCell(el,val,pg);
+      el.classList.add('filling','glow-anim');
+      setTimeout(()=>el.classList.remove('filling','glow-anim'),800);
+      const today=dk(new Date()); pg.activity=pg.activity||{}; pg.activity[today]=(pg.activity[today]||0)+1;
+      if(UserManager.getSetting('soundEnabled',true)) SoundEngine.fill();
+    } else {
+      const before=cells.slice(); cells[idx]=0; _pushUndo(before,pg);
+      el.className=`si si-${pg.shape||'circle'} unfilling`;
+      setTimeout(()=>el.classList.remove('unfilling'),200);
+      const nl=el.querySelector('.shape-nl'); if(!nl){const n=document.createElement('span');n.className='shape-nl';n.textContent=idx+1;el.appendChild(n);}
+      if(UserManager.getSetting('soundEnabled',true)) SoundEngine.unfill();
+    }
+    UserManager.updateUser({}); _checkGoal(pg); _checkAllFilled(pg);
+    return cells[idx];
+  }
+
+  function _applyCell(el, val, pg) {
+    const shape=pg.shape||'circle';
+    let cls=`si si-${shape} filled `;
+    cls+=val==='custom'?'sc-cust':`sc${val}`;
+    el.className=cls;
+    if(val==='custom') el.style.setProperty('--cust-color',pg.customColor||'#ff6b6b');
+    else el.style.removeProperty('--cust-color');
+    if(pg.numSize) el.style.setProperty('--num-size',pg.numSize+'px');
+  }
+
+  function _pushUndo(before, pg) {
+    undoStack.push({snap:before, pgId:pg.id});
+    if(undoStack.length>30) undoStack.shift();
+    redoStack=[];
+    const bar=document.getElementById('undoBar');
+    if(bar){ document.getElementById('undoMsg').textContent=I18n.t('done'); bar.classList.add('show'); }
+    clearTimeout(undoTimer);
+    undoTimer=setTimeout(()=>{ if(bar) bar.classList.remove('show'); },4000);
+  }
+
+  function undo() {
+    if(!undoStack.length) return;
+    const s=undoStack.pop(), u=UserManager.getCurrent(); if(!u) return;
+    const pg=u.pages.find(p=>p.id===s.pgId); if(!pg) return;
+    redoStack.push({snap:pg.cells.slice(),pgId:s.pgId});
+    pg.cells=s.snap; UserManager.updateUser({});
+    const grid=document.getElementById('shapeGrid');
+    if(grid) renderGrid(pg,grid);
+    _updateProgress(pg);
+    UI.toast('↩ تم التراجع');
+    const bar=document.getElementById('undoBar'); if(bar) bar.classList.remove('show');
+  }
+
+  function redo() {
+    if(!redoStack.length) return;
+    const s=redoStack.pop(), u=UserManager.getCurrent(); if(!u) return;
+    const pg=u.pages.find(p=>p.id===s.pgId); if(!pg) return;
+    undoStack.push({snap:pg.cells.slice(),pgId:s.pgId});
+    pg.cells=s.snap; UserManager.updateUser({});
+    const grid=document.getElementById('shapeGrid');
+    if(grid) renderGrid(pg,grid);
+    _updateProgress(pg);
+    UI.toast('↪ تمت الإعادة');
+  }
+
+  function renderGrid(pg, container) {
+    if(!pg||!container) return;
+    container.innerHTML='';
+    container.style.setProperty('--gsz',gridSz+'px');
+    document.documentElement.style.setProperty('--num-size',(pg.numSize||11)+'px');
+    const shape=pg.shape||'circle';
+    const CHUNK=80, frag=document.createDocumentFragment();
+    function renderChunk(start) {
+      const end=Math.min(start+CHUNK,pg.cells.length);
+      for(let i=start;i<end;i++) frag.appendChild(_makeCell(pg.cells[i],i,shape,pg));
+      container.appendChild(frag);
+      if(end<pg.cells.length) requestAnimationFrame(()=>renderChunk(end));
+      else container.classList.toggle('nums-on',!!pg.showNums);
+    }
+    renderChunk(0);
+    container.addEventListener('touchstart',()=>{_isScrolling=false;},{passive:true});
+    container.addEventListener('touchmove',()=>{_isScrolling=true;clearTimeout(_scrollTimer);},{passive:true});
+    container.addEventListener('touchend',()=>{_scrollTimer=setTimeout(()=>{_isScrolling=false;},200);},{passive:true});
+  }
+
+  function _makeCell(val, i, shape, pg) {
+    const el=document.createElement('div');
+    el.dataset.idx=i;
+    if(val&&val!==0) _applyCell(el,val,pg);
+    else el.className=`si si-${shape}`;
+    el.style.opacity='0';
+    el.style.animation=`fadeIn .3s ${Math.min(i*2,500)}ms ease forwards`;
+    if(pg.numSize) el.style.setProperty('--num-size',pg.numSize+'px');
+    const nl=document.createElement('span'); nl.className='shape-nl'; nl.textContent=i+1; el.appendChild(nl);
+    el.addEventListener('click',()=>{ toggleCell(pg,i,el); _updateProgress(pg); });
+    return el;
+  }
+
+  function _updateProgress(pg) { UI.updateVisualProgress(pg); }
+  function _checkGoal(pg) { Goals.checkProgress(pg); }
+  function _checkAllFilled(pg) {
+    const cells=pg.cells||[];
+    if(cells.length>0 && cells.every(c=>c&&c!==0)) {
+      SoundEngine.success(); celebrate(pg.name); Achievements.check();
+    }
+  }
+
+  function getStats(pg) {
+    const cells=pg?pg.cells||[]:[];
+    const filled=cells.filter(c=>c&&c!==0).length, total=cells.length;
+    return {filled,total,remaining:total-filled,pct:total>0?Math.round(filled/total*100):0};
+  }
+
+  function resetCells(pg, container) {
+    if(!pg) return;
+    const before=pg.cells.slice(); _pushUndo(before,pg);
+    pg.cells=pg.cells.map(()=>0); UserManager.updateUser({});
+    if(container) renderGrid(pg,container);
+    _updateProgress(pg);
+  }
+
+  function addCells(pg, n) {
+    if(!pg) return;
+    const before=pg.cells.slice(); _pushUndo(before,pg);
+    for(let i=0;i<n;i++) pg.cells.push(0);
+    UserManager.updateUser({});
+    const g=document.getElementById('shapeGrid');
+    if(g) renderGrid(pg,g);
+    _updateProgress(pg);
+    UI.toast(`➕ أضيف ${n} عنصر`);
+  }
+
+  function setShape(s) { selShape=s; }
+  function setSize(sz,el) {
+    gridSz=sz;
+    document.querySelectorAll('.size-pill').forEach(b=>b.classList.remove('sel'));
+    if(el) el.classList.add('sel');
+    const g=document.getElementById('shapeGrid');
+    if(g) g.style.setProperty('--gsz',sz+'px');
+  }
+  function setColor(c) {
+    selColor=c;
+    const dot=document.getElementById('colorPrevDot');
+    if(dot){ dot.style.background=c==='custom'?customColor:COLORS[c-1]||'#20d6a8'; }
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav();
+  }
+
+  function toggleNums(pg) {
+    if(!pg) return; pg.showNums=!pg.showNums; UserManager.updateUser({});
+    const g=document.getElementById('shapeGrid');
+    if(g) g.classList.toggle('nums-on',pg.showNums);
+    return pg.showNums;
+  }
+
+  function confirmBulkFill() {
+    const n=parseInt(document.getElementById('bulkFillCount').value)||0; if(n<1) return;
+    const pg=Pages.getCurrent(); if(!pg) return;
+    const before=pg.cells.slice(); _pushUndo(before,pg);
+    const val=selColor==='custom'?'custom':selColor;
+    const grid=document.getElementById('shapeGrid');
+    const els=grid?grid.querySelectorAll('.si'):[];
+    let filled=0;
+    for(let i=0;i<pg.cells.length&&filled<n;i++) {
+      if(!pg.cells[i]||pg.cells[i]===0) {
+        pg.cells[i]=val; filled++;
+        if(els[i]) { _applyCell(els[i],val,pg); els[i].classList.add('filling'); setTimeout(((j)=>()=>els[j]&&els[j].classList.remove('filling'))(i),400); }
+        const today=dk(new Date()); pg.activity=pg.activity||{}; pg.activity[today]=(pg.activity[today]||0)+1;
+      }
+    }
+    UserManager.updateUser({}); UI.updateVisualProgress(pg); UI.closeModal('modalBulkFill');
+    UI.toast(`⚡ لوّن ${filled} عنصر`);
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.success();
+    Goals.checkProgress(pg); _checkAllFilled(pg);
+  }
+
+  return { getColors, getCells, toggleCell, renderGrid, getStats, resetCells, addCells, setShape, setSize, setColor, toggleNums, confirmBulkFill, undo, redo };
+})();
+
+/* ══════════════════════════════════════════════
+   EXAM MANAGER
+══════════════════════════════════════════════ */
+const ExamManager = (() => {
+  function _pg(pgId) {
+    const u=UserManager.getCurrent(); if(!u) return null;
+    return (u.pages||[]).find(p=>p.id===pgId)||null;
+  }
+  function getExams(pgId) { const pg=_pg(pgId); return pg?(pg.exams||[]): []; }
+
+  function addExam(pgId, data) {
+    const pg=_pg(pgId); if(!pg||pg.mode!=='exam') return null;
+    const e = {
+      id: uid(),
+      num: (pg.exams.length+1),
+      title: data.title||`اختبار ${pg.exams.length+1}`,
+      link: data.link||'',
+      notes: data.notes||'',
+      score: data.score!==undefined?data.score:null,
+      difficulty: data.difficulty||'medium',
+      completed: false,
+      inProgress: false,
+      favorite: false,
+      retry: false,
+      lastOpened: null,
+      createdAt: Date.now()
+    };
+    pg.exams.push(e); UserManager.updateUser({}); return e;
+  }
+
+  function updateExam(pgId, eid, patch) {
+    const pg=_pg(pgId); if(!pg) return;
+    const e=pg.exams.find(e=>e.id===eid); if(!e) return;
+    Object.assign(e,patch); UserManager.updateUser({});
+  }
+
+  function deleteExam(pgId, eid) {
+    const pg=_pg(pgId); if(!pg) return;
+    pg.exams=pg.exams.filter(e=>e.id!==eid);
+    // re-number
+    pg.exams.forEach((e,i)=>e.num=i+1);
+    UserManager.updateUser({});
+  }
+
+  function toggleState(pgId, eid, state) {
+    const pg=_pg(pgId); if(!pg) return;
+    const e=pg.exams.find(e=>e.id===eid); if(!e) return;
+    if(state==='complete') {
+      e.completed=!e.completed;
+      if(e.completed) { e.inProgress=false; _recordActivity(pg); }
+    } else if(state==='inProgress') {
+      e.inProgress=!e.inProgress;
+      if(e.inProgress) e.completed=false;
+    } else if(state==='favorite') {
+      e.favorite=!e.favorite;
+    } else if(state==='retry') {
+      e.retry=!e.retry;
+    }
+    UserManager.updateUser({});
+  }
+
+  function openExam(pgId, eid) {
+    const pg=_pg(pgId); if(!pg) return;
+    const e=pg.exams.find(e=>e.id===eid); if(!e) return;
+    e.lastOpened=Date.now();
+    if(!e.completed && !e.inProgress) e.inProgress=true;
+    UserManager.updateUser({});
+    if(e.link) window.open(e.link,'_blank');
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.examOpen();
+  }
+
+  function _recordActivity(pg) {
+    const today=dk(new Date()); pg.activity=pg.activity||{}; pg.activity[today]=(pg.activity[today]||0)+1;
+    // update streak
+    const last=pg.lastStudyDate;
+    const yesterday=dk(new Date(Date.now()-86400000));
+    if(!last || last===yesterday) {
+      pg.streak=(pg.streak||0)+1;
+    } else if(last!==today) {
+      pg.streak=1;
+    }
+    pg.lastStudyDate=today;
+    if(!pg.studyHistory) pg.studyHistory=[];
+    const existing=pg.studyHistory.find(h=>h.date===today);
+    if(existing) existing.count++;
+    else pg.studyHistory.push({date:today,count:1});
+  }
+
+  function bulkImport(pgId, raw) {
+    const lines=raw.split('\n').map(l=>l.trim()).filter(Boolean);
+    let added=0;
+    lines.forEach(line=>{
+      const parts=line.split('|');
+      const link=parts[0].trim();
+      const title=parts[1]?parts[1].trim():'';
+      if(link) { addExam(pgId,{link,title:title||undefined}); added++; }
+    });
+    return added;
+  }
+
+  function getStats(pgId) {
+    const exams=getExams(pgId);
+    const done=exams.filter(e=>e.completed).length;
+    const inProg=exams.filter(e=>e.inProgress).length;
+    const total=exams.length;
+    const scores=exams.filter(e=>e.score!==null&&e.score!==undefined&&e.completed);
+    const avg=scores.length>0?Math.round(scores.reduce((a,e)=>a+e.score,0)/scores.length):null;
+    return { done, inProg, total, pct:total>0?Math.round(done/total*100):0, avg };
+  }
+
+  // Smart ordering: weak exams first (lowest score or never opened)
+  function getWeakFirst(pgId) {
+    const exams=getExams(pgId).filter(e=>!e.completed);
+    return [...exams].sort((a,b)=>{
+      const sa=a.score!==null?a.score:101;
+      const sb=b.score!==null?b.score:101;
+      if(sa!==sb) return sa-sb; // lower score first
+      // then by difficulty
+      const dw={hard:0,medium:1,easy:2};
+      return (dw[a.difficulty]||1)-(dw[b.difficulty]||1);
+    });
+  }
+
+  function getRandomOrder(pgId) {
+    const exams=getExams(pgId).filter(e=>!e.completed);
+    return [...exams].sort(()=>Math.random()-.5);
+  }
+
+  function getSpacedRepetition(pgId) {
+    // Exams not studied recently get priority
+    const exams=getExams(pgId);
+    const now=Date.now();
+    return [...exams].sort((a,b)=>{
+      const la=a.lastOpened||0, lb=b.lastOpened||0;
+      return la-lb; // least recently opened first
+    });
+  }
+
+  return { getExams, addExam, updateExam, deleteExam, toggleState, openExam, bulkImport, getStats, getWeakFirst, getRandomOrder, getSpacedRepetition };
+})();
+
+/* ══════════════════════════════════════════════
+   PAGES MODULE
+══════════════════════════════════════════════ */
+const Pages = (() => {
+  let _currentId = null, _pendingPin = null;
+
+  function getAll() { const u=UserManager.getCurrent(); return u?(u.pages||[]): []; }
+  function getCurrent() { const u=UserManager.getCurrent(); if(!u) return null; return (u.pages||[]).find(p=>p.id===_currentId)||null; }
+  function setCurrentId(id) { _currentId=id; }
+
+  function create(name, mode, opts={}) {
+    const u=UserManager.getCurrent(); if(!u) return null;
+    const pg=StorageManager.defaultPage(name,mode,opts);
+    u.pages.push(pg); UserManager.updateUser({}); return pg;
+  }
+
+  function update(id, patch) {
+    const u=UserManager.getCurrent(); if(!u) return;
+    const pg=(u.pages||[]).find(p=>p.id===id); if(!pg) return;
+    Object.assign(pg,patch); UserManager.updateUser({});
+  }
+
+  function deletePage(id) {
+    const u=UserManager.getCurrent(); if(!u) return;
+    u.pages=(u.pages||[]).filter(p=>p.id!==id);
+    if(_currentId===id) _currentId=null;
+    UserManager.updateUser({});
+  }
+
+  function getStreak(pg) {
+    if(!pg||!pg.activity) return 0;
+    let streak=0, d=new Date();
+    for(let i=0;i<365;i++) {
+      const key=dk(new Date(d-i*86400000));
+      if(pg.activity[key]>0) streak++;
+      else if(i>0) break;
+    }
+    return streak;
+  }
+
+  function tryOpen(id) {
+    const u=UserManager.getCurrent(); if(!u) return;
+    const pg=(u.pages||[]).find(p=>p.id===id); if(!pg) return;
+    if(pg.pin) {
+      _pendingPin=id;
+      document.getElementById('pinVal').value='';
+      document.getElementById('pinErr').style.display='none';
+      UI.openModal('modalPin');
+    } else {
+      _currentId=id;
+      UI.openPage(id);
+    }
+  }
+
+  function confirmPin() {
+    const val=document.getElementById('pinVal').value.trim();
+    const u=UserManager.getCurrent(); if(!u) return;
+    const pg=(u.pages||[]).find(p=>p.id===_pendingPin); if(!pg) return;
+    if(val===pg.pin || val===StorageManager.MASTER_KEY) {
+      UI.closeModal('modalPin'); _currentId=_pendingPin; _pendingPin=null; UI.openPage(_currentId);
+    } else {
+      document.getElementById('pinErr').style.display='block';
+      if(UserManager.getSetting('soundEnabled',true)) SoundEngine.error();
+    }
+  }
+
+  function confirmNew() {
+    const name=document.getElementById('npName').value.trim(); if(!name){document.getElementById('npName').focus();return;}
+    const mode=document.getElementById('npMode').value;
+    const pin=document.getElementById('npPin').value.trim();
+    const book=document.getElementById('npBook')?.value.trim()||'';
+    const opts={goal:parseInt(document.getElementById('npGoal').value)||0};
+    if(mode==='visual'){opts.count=parseInt(document.getElementById('npCount').value)||30;opts.shape=document.getElementById('npShape').value||'circle';}
+    const pg=create(name,mode,opts);
+    if(pin){pg.pin=pin;pg.recoveryBook=book;UserManager.updateUser({});}
+    UI.closeModal('modalNewPage');
+    UI.renderPagesNav();
+    _currentId=pg.id;
+    UI.openPage(pg.id);
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.add();
+    UI.toast(`✨ "${name}"`);
+    Achievements.check();
+  }
+
+  function _toggleVisualOpts() {
+    const m=document.getElementById('npMode').value;
+    document.getElementById('npVisualOpts').classList.toggle('hidden',m!=='visual');
+    document.getElementById('npExamOpts').classList.toggle('hidden',m!=='exam');
+  }
+
+  function exportData() {
+    const pg=getCurrent(); if(!pg) return;
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(pg,null,2)],{type:'application/json'}));
+    a.download=`${pg.name}_${Date.now()}.json`; a.click();
+    UI.toast('📥 تم التصدير');
+  }
+
+  return { getAll, getCurrent, setCurrentId, create, update, deletePage, getStreak, tryOpen, confirmPin, confirmNew, _toggleVisualOpts, exportData };
+})();
+
+/* ══════════════════════════════════════════════
+   GOALS MODULE
+══════════════════════════════════════════════ */
+const Goals = (() => {
+  let _gs='fresh';
+  function open() {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    document.getElementById('goalVal').value=pg.dailyGoal||10;
+    const isVis=pg.mode==='visual';
+    document.getElementById('goalStartLabel').style.display=isVis?'block':'none';
+    document.getElementById('goalStartRow').style.display=isVis?'flex':'none';
+    document.getElementById('goalHint').style.display='none';
+    UI.openModal('modalGoal');
+  }
+  function selectStart(s,el) {
+    _gs=s;
+    document.querySelectorAll('.goal-radio').forEach(r=>r.classList.toggle('sel',r.dataset.gs===s));
+    const pg=Pages.getCurrent(); if(!pg||pg.mode!=='visual') return;
+    const s2=GridManager.getStats(pg);
+    const hint=document.getElementById('goalHint');
+    if(s==='fresh'){hint.textContent=`سيبدأ العد من الصفر`;hint.style.display='block';}
+    else{hint.textContent=`سيُحسب ${s2.filled} عنصر مكتمل`;hint.style.display='block';}
+  }
+  function confirm() {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    const goal=parseInt(document.getElementById('goalVal').value)||0;
+    pg.dailyGoal=goal;
+    if(pg.mode==='visual'&&_gs==='fresh') pg.goalStartFrom=GridManager.getStats(pg).filled;
+    else if(pg.mode==='visual') pg.goalStartFrom=0;
+    UserManager.updateUser({});
+    UI.closeModal('modalGoal');
+    UI.toast(`🎯 الهدف: ${goal}`);
+  }
+  function checkProgress(pg) {
+    if(!pg||!pg.dailyGoal) return;
+    let cur=0;
+    if(pg.mode==='visual') cur=GridManager.getStats(pg).filled-(pg.goalStartFrom||0);
+    else if(pg.mode==='task') cur=TaskManager.getStats(pg.id).done;
+    else if(pg.mode==='exam') cur=ExamManager.getStats(pg.id).done;
+    if(cur>=pg.dailyGoal) { showCelebration('🎯 تحقق الهدف!',`أنجزت ${cur} من ${pg.dailyGoal}!`); }
+  }
+  return { open, selectStart, confirm, checkProgress };
+})();
+
+/* ══════════════════════════════════════════════
+   ACHIEVEMENTS
+══════════════════════════════════════════════ */
+const Achievements = (() => {
+  const LIST = [
+    {id:'first_fill', name:'أول خطوة', desc:'أكمل عنصراً واحداً', icon:'🌱', check:(u,s)=>s.totalDone>=1},
+    {id:'ten',        name:'العشرة',    desc:'أكمل 10 عناصر',     icon:'🔟', check:(u,s)=>s.totalDone>=10},
+    {id:'fifty',      name:'النصف مئة', desc:'أكمل 50 عنصراً',   icon:'💪', check:(u,s)=>s.totalDone>=50},
+    {id:'hundred',    name:'المئة',     desc:'أكمل 100 عنصر',     icon:'💯', check:(u,s)=>s.totalDone>=100},
+    {id:'streak3',    name:'3 أيام',    desc:'3 أيام متواصلة',    icon:'🔥', check:(u,s)=>s.maxStreak>=3},
+    {id:'streak7',    name:'أسبوع كامل',desc:'7 أيام متواصلة',   icon:'🏆', check:(u,s)=>s.maxStreak>=7},
+    {id:'folders3',   name:'منظّم',     desc:'أنشئ 3 مجلدات',    icon:'📂', check:(u,s)=>s.pageCount>=3},
+    {id:'perfectPage',name:'اكتمال تام',desc:'أكمل مجلداً بالكامل',icon:'⭐',check:(u,s)=>s.hasPerfect},
+    {id:'exam_done',  name:'اختبار أول',desc:'أكمل اختباراً',    icon:'📝', check:(u,s)=>s.examsDone>=1},
+    {id:'exam_ten',   name:'عشرة اختبارات',desc:'أكمل 10 اختبارات',icon:'🎓',check:(u,s)=>s.examsDone>=10},
+  ];
+  function _calcStats() {
+    const u=UserManager.getCurrent(); if(!u) return {};
+    let totalDone=0,maxStreak=0,hasPerfect=false,examsDone=0;
+    (u.pages||[]).forEach(pg=>{
+      const sk=Pages.getStreak(pg); if(sk>maxStreak) maxStreak=sk;
+      if(pg.mode==='task'){const s=TaskManager.getStats(pg.id);totalDone+=s.done;if(s.total>0&&s.done===s.total)hasPerfect=true;}
+      else if(pg.mode==='visual'){const s=GridManager.getStats(pg);totalDone+=s.filled;if(s.total>0&&s.filled===s.total)hasPerfect=true;}
+      else if(pg.mode==='exam'){const s=ExamManager.getStats(pg.id);examsDone+=s.done;totalDone+=s.done;}
+    });
+    return {totalDone,maxStreak,hasPerfect,examsDone,pageCount:(u.pages||[]).length};
+  }
+  function check() {
+    const u=UserManager.getCurrent(); if(!u) return;
+    const stats=_calcStats();
+    if(!u.achievements) u.achievements={};
+    let newUnlock=false;
+    LIST.forEach(a=>{
+      if(!u.achievements[a.id]&&a.check(u,stats)) {
+        u.achievements[a.id]=Date.now(); newUnlock=true;
+        setTimeout(()=>UI.toast(`🏆 إنجاز جديد: ${a.name}`),500);
+      }
+    });
+    if(newUnlock) UserManager.updateUser({});
+  }
+  function getList() { return LIST; }
+  function getUnlocked() { const u=UserManager.getCurrent(); return u?(u.achievements||{}):{} ; }
+  return { check, getList, getUnlocked };
+})();
+
+/* ══════════════════════════════════════════════
+   COUNTDOWN TIMER
+══════════════════════════════════════════════ */
+const Countdown = (() => {
+  let _timer=null, _remaining=0, _widget=null;
+
+  function start() {
+    const h=parseInt(document.getElementById('cdH').value)||0;
+    const m=parseInt(document.getElementById('cdM').value)||0;
+    const s=parseInt(document.getElementById('cdS').value)||0;
+    _remaining=h*3600+m*60+s;
+    if(_remaining<=0) return;
+    UI.closeModal('modalCountdown');
+    _widget=document.getElementById('cdWidget');
+    if(_widget) _widget.classList.add('show');
+    clearInterval(_timer);
+    _timer=setInterval(_tick,1000);
+    _render();
+  }
+  function _tick() {
+    _remaining--;
+    if(_remaining<=0) { clearInterval(_timer); _remaining=0; _render(); if(UserManager.getSetting('soundEnabled',true)) SoundEngine.success(); UI.toast('⏰ انتهى الوقت!'); }
+    _render();
+  }
+  function _render() {
+    const w=document.getElementById('cdTime'); if(!w) return;
+    const h=Math.floor(_remaining/3600), m=Math.floor((_remaining%3600)/60), s=_remaining%60;
+    w.textContent=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    w.classList.toggle('urgent',_remaining>0&&_remaining<=60);
+  }
+  function stop() { clearInterval(_timer); _remaining=0; const w=document.getElementById('cdWidget'); if(w) w.classList.remove('show'); }
+  function cdPreset(h,m,s) { document.getElementById('cdH').value=h; document.getElementById('cdM').value=m; document.getElementById('cdS').value=s; }
+  return { start, stop, cdPreset };
+})();
+
+/* ══════════════════════════════════════════════
+   SMART SESSION (Exam Study Mode)
+══════════════════════════════════════════════ */
+const SmartSession = (() => {
+  let _queue=[], _idx=0, _pgId=null, _mode='weak';
+
+  function start(pgId, mode='weak') {
+    _pgId=pgId; _mode=mode; _idx=0;
+    if(mode==='weak')   _queue=ExamManager.getWeakFirst(pgId);
+    else if(mode==='random') _queue=ExamManager.getRandomOrder(pgId);
+    else if(mode==='spaced') _queue=ExamManager.getSpacedRepetition(pgId);
+    else _queue=ExamManager.getExams(pgId).filter(e=>!e.completed);
+
+    if(!_queue.length){ UI.toast('✅ جميع الاختبارات مكتملة!'); return; }
+    _showPanel();
+  }
+
+  function _showPanel() {
+    const panel=document.getElementById('sessionPanel');
+    if(!panel) return;
+    panel.classList.remove('hidden');
+    _renderCurrent();
+  }
+
+  function _renderCurrent() {
+    if(_idx>=_queue.length){ _finish(); return; }
+    const e=_queue[_idx];
+    document.getElementById('sessionProgress').textContent=`${_idx+1} / ${_queue.length}`;
+    document.getElementById('sessionBar').style.width=`${((_idx)/_queue.length)*100}%`;
+    document.getElementById('sessionNum').textContent=e.num;
+    document.getElementById('sessionTitle').textContent=e.title;
+    document.getElementById('sessionNote').textContent=e.notes||'لا توجد ملاحظات';
+    const scoreEl=document.getElementById('sessionScore');
+    scoreEl.textContent=e.score!==null?`${e.score}%`:'—';
+    scoreEl.className='sec-score '+(e.score!==null?(e.score>=70?'high':e.score>=50?'mid':'low'):'');
+  }
+
+  function openCurrent() {
+    if(_idx>=_queue.length) return;
+    const e=_queue[_idx];
+    ExamManager.openExam(_pgId,e.id);
+    // Re-render page if open
+    const pg=Pages.getCurrent();
+    if(pg&&pg.id===_pgId) UI.renderExamGrid(pg);
+  }
+
+  function markDone(score=null) {
+    if(_idx>=_queue.length) return;
+    const e=_queue[_idx];
+    ExamManager.updateExam(_pgId,e.id,{completed:true,inProgress:false,score:score!==null?parseInt(score):e.score});
+    ExamManager.toggleState(_pgId,e.id,'complete'); // triggers activity
+    const pg=Pages.getCurrent(); if(pg&&pg.id===_pgId) UI.renderExamGrid(pg);
+    _idx++; _renderCurrent();
+    Achievements.check();
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.examDone();
+  }
+
+  function skip() { _idx++; _renderCurrent(); }
+
+  function _finish() {
+    document.getElementById('sessionPanel').classList.add('hidden');
+    showCelebration(I18n.t('sessionComplete'),'أحسنت! واصل التقدم 🚀');
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.success();
+    Achievements.check();
+  }
+
+  function close() { document.getElementById('sessionPanel').classList.add('hidden'); }
+
+  return { start, openCurrent, markDone, skip, close };
+})();
+
+/* ══════════════════════════════════════════════
+   ADMIN
+══════════════════════════════════════════════ */
+const Admin = (() => {
+  let _authed=false;
+  function tryLogin() { UI.openModal('modalAdminLogin'); document.getElementById('adminPwInp').value=''; document.getElementById('adminErr').style.display='none'; }
+  function confirmLogin() {
+    const pw=document.getElementById('adminPwInp').value;
+    if(btoa(pw)===StorageManager.ADMIN_HASH||pw===StorageManager.MASTER_KEY) {
+      _authed=true; UI.closeModal('modalAdminLogin'); UI.showView('admin');
+    } else {
+      document.getElementById('adminErr').style.display='block';
+      if(UserManager.getSetting('soundEnabled',true)) SoundEngine.error();
+    }
+  }
+  function loadData() {
+    if(!_authed) return;
+    const users=UserManager.getUsers();
+    let rows='';
+    users.forEach(u=>{
+      const pages=u.pages||[];
+      let totalDone=0,totalItems=0;
+      pages.forEach(pg=>{
+        if(pg.mode==='task'){const s=TaskManager.getStats(pg.id);totalDone+=s.done;totalItems+=s.total;}
+        else if(pg.mode==='visual'){const s=GridManager.getStats(pg);totalDone+=s.filled;totalItems+=s.total;}
+        else if(pg.mode==='exam'){const s=ExamManager.getStats(pg.id);totalDone+=s.done;totalItems+=s.total;}
+      });
+      rows+=`<tr>
+        <td>${esc(u.name)}</td>
+        <td>${pages.length}</td>
+        <td>${totalDone}/${totalItems}</td>
+        <td>${totalItems>0?Math.round(totalDone/totalItems*100):0}%</td>
+        <td>${new Date(u.lastActive).toLocaleDateString('ar-SA')}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="Admin.deleteUser('${u.id}')">حذف</button></td>
+      </tr>`;
+    });
+    const c=document.getElementById('content');
+    c.innerHTML=`<div class="admin-wrap">
+      <div class="admin-section">
+        <div class="admin-section-hdr"><span>👥 المستخدمون (${users.length})</span></div>
+        <table class="admin-table">
+          <thead><tr><th>الاسم</th><th>المجلدات</th><th>الإنجاز</th><th>%</th><th>آخر نشاط</th><th></th></tr></thead>
+          <tbody>${rows||'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:1rem">لا يوجد مستخدمون</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;padding:.5rem 0">
+        <button class="btn btn-danger" onclick="Admin.clearAll()">🗑 حذف كل البيانات</button>
+        <button class="btn" onclick="Admin.exportAll()">📤 تصدير كل البيانات</button>
+      </div>
+    </div>`;
+  }
+  function deleteUser(id) {
+    if(!confirm('حذف هذا المستخدم؟')) return;
+    UserManager.deleteUser(id); loadData();
+  }
+  function clearAll() {
+    if(!confirm('⚠️ حذف جميع البيانات نهائياً؟')) return;
+    localStorage.clear(); location.reload();
+  }
+  function exportAll() {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(UserManager.getState(),null,2)],{type:'application/json'}));
+    a.download=`mnj_backup_${Date.now()}.json`; a.click();
+  }
+  return { tryLogin, confirmLogin, loadData, deleteUser, clearAll, exportAll };
+})();
+
+/* ══════════════════════════════════════════════
+   CONFETTI & CELEBRATION
+══════════════════════════════════════════════ */
+function confetti() {
+  const cols=['#20d6a8','#ef4444','#8b5cf6','#f59e0b','#3d8ef0','#e879a0'];
+  for(let i=0;i<28;i++){
+    const el=document.createElement('div'); el.className='confetti-piece';
+    el.style.cssText=`background:${cols[i%cols.length]};width:${5+Math.random()*7}px;height:${5+Math.random()*7}px;left:${10+Math.random()*80}%;top:${25+Math.random()*35}%;border-radius:${Math.random()>.5?'50%':'2px'};animation-delay:${Math.random()*.5}s;animation-duration:${.9+Math.random()*.7}s;`;
+    document.body.appendChild(el);
+    setTimeout(()=>el.remove(),1600);
+  }
+}
+function showCelebration(title='رائع!',msg='أحسنت!') {
+  confetti();
+  document.getElementById('celTitle').textContent=title;
+  document.getElementById('celMsg').textContent=msg;
+  const cel=document.getElementById('celebration'); cel.classList.add('show');
+  if(navigator.vibrate) navigator.vibrate([50,50,200]);
+  setTimeout(()=>cel.classList.remove('show'),7000);
+}
+window.celebrate=(name)=>showCelebration('🎉 اكتمل المجلد!',`أنجزت جميع عناصر "${name}"! 🏆`);
+function closeCelebration(){ document.getElementById('celebration').classList.remove('show'); }
+
+/* ══════════════════════════════════════════════
+   UI MODULE
+══════════════════════════════════════════════ */
+const UI = (() => {
+  let _taskFilter='all', _taskSearch='', _toastTimer=null;
+  let _taskSbCollapsed=false, _examView='grid';
+  let _ctxMenu=null;
+
+  /* ── Init ── */
+  function init() {
+    const u=UserManager.getCurrent(); if(!u) return;
+    const lang=UserManager.getSetting('lang','ar');
+    I18n.setLang(lang);
+    _updateUserBadge();
+    renderPagesNav();
+    applyTheme();
+    applySound();
+    showView('home');
+  }
+
+  function _updateUserBadge() {
+    const u=UserManager.getCurrent(); if(!u) return;
+    document.getElementById('sbAvatar').textContent=u.avatar||u.name.charAt(0);
+    document.getElementById('sbAvatar').style.background=u.color||'var(--accent)';
+    document.getElementById('sbUserName').textContent=u.name;
+  }
+
+  /* ── Theme & Sound ── */
+  function applyTheme() {
+    const dark=UserManager.getSetting('darkMode',true);
+    document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+    const btn=document.getElementById('themeBtn');
+    if(btn) btn.textContent=dark?'☀️':'🌙';
+  }
+  function applySound() {
+    const on=UserManager.getSetting('soundEnabled',true);
+    const btn=document.getElementById('soundBtn');
+    if(btn){ btn.textContent=on?'🔊':'🔇'; btn.classList.toggle('active',on); }
+  }
+  function toggleTheme() { const d=UserManager.getSetting('darkMode',true); UserManager.setSetting('darkMode',!d); applyTheme(); if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav(); }
+  function toggleSound() { const s=UserManager.getSetting('soundEnabled',true); UserManager.setSetting('soundEnabled',!s); applySound(); }
+  function toggleLang() {
+    const cur=I18n.getLang(), next=cur==='ar'?'en':'ar';
+    UserManager.setSetting('lang',next); I18n.setLang(next);
+    const btn=document.getElementById('langBtn'); if(btn) btn.textContent=next==='ar'?'EN':'عر';
+    renderPagesNav();
+    const pg=Pages.getCurrent();
+    if(pg) openPage(pg.id); else showView('home');
+  }
+  function toggleSidebar() { document.getElementById('sidebar').classList.toggle('collapsed'); }
+  function toggleMobileSidebar() { document.getElementById('sidebar').classList.add('mobile-open'); document.getElementById('sidebar-backdrop').classList.add('show'); }
+  function closeMobileSidebar() { document.getElementById('sidebar').classList.remove('mobile-open'); document.getElementById('sidebar-backdrop').classList.remove('show'); }
+
+  /* ── Pages Nav ── */
+  function renderPagesNav() {
+    const pages=Pages.getAll(), nav=document.getElementById('pagesNav'); if(!nav) return;
+    nav.innerHTML='';
+    pages.forEach(pg=>{
+      let pct=0;
+      if(pg.mode==='task') pct=TaskManager.getStats(pg.id).pct;
+      else if(pg.mode==='visual') pct=GridManager.getStats(pg).pct;
+      else if(pg.mode==='exam') pct=ExamManager.getStats(pg.id).pct;
+      const d=document.createElement('div');
+      d.className='page-nav-item'+(pg.id===Pages.getCurrent()?.id?' active':'');
+      const modeClass={'task':'','visual':'visual','exam':'exam'}[pg.mode]||'';
+      const icon=pg.pin?'🔒':pg.mode==='task'?'📋':pg.mode==='visual'?'🎨':'📝';
+      d.innerHTML=`<span class="pni-icon">${icon}</span><span class="pni-name">${esc(pg.name)}</span><span class="pni-pct">${pct}%</span><span class="pni-mode-dot ${modeClass}"></span>`;
+      d.onclick=()=>Pages.tryOpen(pg.id);
+      nav.appendChild(d);
+    });
+  }
+
+  /* ── Views ── */
+  function showView(v, anim=true) {
+    const c=document.getElementById('content');
+    document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.view===v));
+    if(anim){ c.style.opacity='0'; c.style.transform='translateY(8px)'; }
+    setTimeout(()=>{
+      switch(v) {
+        case 'home':         c.innerHTML=_renderHome(); break;
+        case 'stats':        c.innerHTML=_renderStats(); break;
+        case 'achievements': c.innerHTML=_renderAchievements(); break;
+        case 'admin':        Admin.loadData(); break;
+        default:             c.innerHTML=_renderHome();
+      }
+      if(anim){ c.style.transition='opacity .22s,transform .22s'; c.style.opacity='1'; c.style.transform=''; setTimeout(()=>c.style.transition='',250); }
+      _setTopbarView(v);
+    }, anim?110:0);
+  }
+
+  function _setTopbarView(v) {
+    const labels={home:I18n.t('home'),stats:I18n.t('stats'),achievements:I18n.t('achievements'),admin:I18n.t('admin')};
+    setTopbar(labels[v]||I18n.t('home'),'');
+    document.getElementById('topbarActions').innerHTML=`<button class="btn btn-icon btn-sm" onclick="UI.showView('home')">🏠</button>`;
+  }
+
+  function openPage(id) {
+    Pages.setCurrentId(id);
+    const pg=Pages.getCurrent(); if(!pg) return;
+    renderPagesNav();
+    const c=document.getElementById('content');
+    c.style.opacity='0'; c.style.transform='translateX(-8px)';
+    setTimeout(()=>{
+      if(pg.mode==='task')        _renderTaskView(pg);
+      else if(pg.mode==='visual') _renderVisualView(pg);
+      else if(pg.mode==='exam')   _renderExamView(pg);
+      c.style.transition='opacity .22s,transform .22s';
+      c.style.opacity='1'; c.style.transform='';
+      setTimeout(()=>c.style.transition='',250);
+      _setTopbarPage(pg);
+      document.querySelectorAll('.nav-item').forEach(el=>el.classList.remove('active'));
+    },110);
+  }
+
+  function _setTopbarPage(pg) {
+    let stats='';
+    if(pg.mode==='task'){ const s=TaskManager.getStats(pg.id); stats=`${s.done}/${s.total} • ${s.pct}%`; }
+    else if(pg.mode==='visual'){ const s=GridManager.getStats(pg); stats=`${s.filled}/${s.total} • ${s.pct}%`; }
+    else if(pg.mode==='exam'){ const s=ExamManager.getStats(pg.id); stats=`${s.done}/${s.total} • ${s.pct}%`; }
+    setTopbar(pg.name, stats);
+    document.getElementById('topbarActions').innerHTML=`
+      <button class="btn btn-icon btn-sm" onclick="UI.openPageSettings()" title="${I18n.t('settings')}">⚙️</button>
+      <button class="btn btn-icon btn-sm" onclick="UI.showView('home')">🏠</button>`;
+  }
+
+  function setTopbar(title,sub) {
+    document.getElementById('topbarTitle').textContent=title;
+    document.getElementById('topbarSub').textContent=sub||'';
+  }
+
+  /* ── HOME ── */
+  function _renderHome() {
+    const u=UserManager.getCurrent(); if(!u) return '<div class="empty-state"><div class="empty-icon">👤</div></div>';
+    const pages=Pages.getAll();
+    let totalDone=0,totalItems=0;
+    pages.forEach(pg=>{
+      if(pg.mode==='task'){const s=TaskManager.getStats(pg.id);totalDone+=s.done;totalItems+=s.total;}
+      else if(pg.mode==='visual'){const s=GridManager.getStats(pg);totalDone+=s.filled;totalItems+=s.total;}
+      else if(pg.mode==='exam'){const s=ExamManager.getStats(pg.id);totalDone+=s.done;totalItems+=s.total;}
+    });
+    const streak=_calcGlobalStreak(pages);
+    const hour=new Date().getHours();
+    const greet=hour<12?I18n.t('greetMorning'):hour<18?I18n.t('greetAfternoon'):I18n.t('greetEvening');
+    const dateStr=new Date().toLocaleDateString(I18n.getLang()==='ar'?'ar-SA':'en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
+    const cardsHtml=pages.map((pg,idx)=>{
+      let s={done:0,filled:0,total:0,pct:0};
+      if(pg.mode==='task') s=TaskManager.getStats(pg.id);
+      else if(pg.mode==='visual') s=GridManager.getStats(pg);
+      else if(pg.mode==='exam') { const es=ExamManager.getStats(pg.id); s={done:es.done,filled:es.done,total:es.total,pct:es.pct}; }
+      const sk=Pages.getStreak(pg);
+      const modeLabel=pg.mode==='task'?I18n.t('task'):pg.mode==='visual'?I18n.t('visual'):I18n.t('exam');
+      const modeClass=`pc-mode-${pg.mode}`;
+      const icon=pg.mode==='task'?'📋':pg.mode==='visual'?'🎨':'📝';
+      return `<div class="page-card anim-${idx%6}" onclick="Pages.tryOpen('${pg.id}')">
+        ${pg.pin?`<span class="pc-pin">🔒</span>`:''}
+        ${sk>1?`<span class="pc-streak">🔥${sk}</span>`:''}
+        <div class="pc-mode ${modeClass}">${icon} ${modeLabel}</div>
+        <div class="pc-title">${esc(pg.name)}</div>
+        <div class="pc-sub">${s.done||s.filled||0} / ${s.total}</div>
+        <div class="pc-bar-bg"><div class="pc-bar-fill" style="width:${s.pct}%"></div></div>
+        <div class="pc-bar-label"><span>${s.pct}%</span><span>${pg.dailyGoal?'🎯'+pg.dailyGoal:''}</span></div>
+      </div>`;
+    }).join('');
+
+    return `<div class="home-wrap">
+      <div class="home-greeting">
+        <h1>${greet}، ${esc(u.name)} 👋</h1>
+        <p>${dateStr}</p>
+      </div>
+      <div class="stats-row">
+        <div class="stat-card anim-0"><div class="stat-icon">📄</div><div class="stat-val">${pages.length}</div><div class="stat-lbl">${I18n.t('pages')}</div></div>
+        <div class="stat-card anim-1"><div class="stat-icon">✅</div><div class="stat-val">${totalDone}</div><div class="stat-lbl">${I18n.t('done')}</div></div>
+        <div class="stat-card anim-2"><div class="stat-icon">📈</div><div class="stat-val">${totalItems>0?Math.round(totalDone/totalItems*100):0}%</div><div class="stat-lbl">المتوسط</div></div>
+        <div class="stat-card anim-3"><div class="stat-icon">🔥</div><div class="stat-val">${streak}</div><div class="stat-lbl">${I18n.t('streak')}</div></div>
+      </div>
+      <div class="section-hdr"><h2>${I18n.t('pages')}</h2><button class="btn btn-sm btn-primary" onclick="UI.openModal('modalNewPage')" style="gap:4px">+ ${I18n.t('newPage')}</button></div>
+      <div class="pages-grid">
+        ${cardsHtml}
+        <div class="add-page-card" onclick="UI.openModal('modalNewPage')">
+          <div style="font-size:1.5rem">+</div>
+          <div>${I18n.t('newPage')}</div>
         </div>
       </div>
-      <input class="form-input" placeholder="نص السؤال (اختياري إذا أضفت صورة)..." value="${escapeHtml(q.text||'')}"
-        oninput="getBuilderQuestions('${containerId}')[${qi}].text=this.value;updateAnswerMapIfExists()"
-        style="margin-bottom:9px"/>
-      ${imgPreview}
-      <div class="q-img-upload-row">
-        <label class="q-img-upload-btn" title="إضافة صورة للسؤال">
-          🖼️ ${q.image ? 'تغيير الصورة' : 'إضافة صورة'}
-          <input type="file" accept="image/*" style="display:none"
-            onchange="handleBuilderImageUpload(event,'${containerId}',${qi})"/>
-        </label>
-        <span class="q-img-hint">الصورة ستكون هي السؤال المعروض للطالب</span>
+    </div>`;
+  }
+
+  function _calcGlobalStreak(pages) {
+    let max=0;
+    pages.forEach(pg=>{ const s=Pages.getStreak(pg); if(s>max) max=s; });
+    return max;
+  }
+
+  /* ── TASK VIEW ── */
+  function _renderTaskView(pg) {
+    const c=document.getElementById('content');
+    c.innerHTML=`
+    <div class="task-view">
+      <div class="task-main" id="taskMain">
+        <div class="task-toolbar">
+          <input class="inp task-search" id="taskSearch" placeholder="🔍 بحث..." value="${esc(_taskSearch)}" oninput="UI.filterTasks(this.value)">
+          <button class="btn btn-sm btn-primary" onclick="Tasks.openAdd('${pg.id}')">+ ${I18n.t('add')}</button>
+          <button class="btn btn-sm" onclick="UI.openModal('modalBulkTasks')">📋 دفعي</button>
+          <div class="drop" id="sortDrop">
+            <button class="btn btn-sm btn-icon" onclick="UI.toggleDrop('sortDrop')">⋯</button>
+            <div class="drop-menu" id="sortDropMenu">
+              <div class="drop-item" onclick="Tasks.sortBy('priority');UI.closeAllDrops()">🔴 الأولوية</div>
+              <div class="drop-item" onclick="Tasks.sortBy('due');UI.closeAllDrops()">📅 التاريخ</div>
+              <div class="drop-item" onclick="Tasks.sortBy('name');UI.closeAllDrops()">🔤 الاسم</div>
+              <div class="drop-divider"></div>
+              <div class="drop-item" onclick="Tasks.clearDone('${pg.id}');UI.closeAllDrops()">🗑 حذف المكتملة</div>
+            </div>
+          </div>
+        </div>
+        <div class="task-content" id="taskContent"></div>
       </div>
-      <div class="choices-builder" id="${containerId}-choices-${qi}">${ch}</div>
-      <textarea class="q-note-input" placeholder="ملاحظة المعلم (تظهر للطالب أثناء السؤال إن فعّلتها)..."
-        oninput="getBuilderQuestions('${containerId}')[${qi}].note=this.value"
-      >${escapeHtml(q.note||'')}</textarea>`;
-    frag.appendChild(item);
-  });
-  container.innerHTML=''; container.appendChild(frag);
-  if(containerId==='questions-builder') renderAnswerMap();
-}
-function renderBuilder() { renderBuilderTo(AppState.builderQuestions,'questions-builder'); }
-
-/* helper: الحصول على مصفوفة الأسئلة حسب الـ containerId */
-function getBuilderQuestions(cid) {
-  return cid==='edit-questions-builder' ? AppState.editQuestions : AppState.builderQuestions;
-}
-function updateAnswerMapIfExists() { if($id('answer-map-section')) renderAnswerMap(); }
-
-/* تبديل تعدد الإجابات */
-function toggleBuilderMulti(cid, qi) {
-  const qs=getBuilderQuestions(cid);
-  qs[qi].multiCorrect=!qs[qi].multiCorrect;
-  qs[qi].correctAnswers=[qs[qi].correct||0];
-  renderBuilderTo(qs, cid);
-}
-
-function builderSetCorrect(cid, qi, ci, checked, isMulti) {
-  const qs=getBuilderQuestions(cid); const q=qs[qi];
-  if(isMulti) {
-    if(!Array.isArray(q.correctAnswers)) q.correctAnswers=[];
-    if(checked){ if(!q.correctAnswers.includes(ci)) q.correctAnswers.push(ci); }
-    else{ q.correctAnswers=q.correctAnswers.filter(x=>x!==ci); if(!q.correctAnswers.length) q.correctAnswers=[ci]; }
-    q.correct=q.correctAnswers[0];
-  } else { q.correct=ci; q.correctAnswers=[ci]; }
-  if(cid==='questions-builder') updateAnswerMapIfExists();
-}
-function deleteBuilderQ(cid, i) {
-  const qs=getBuilderQuestions(cid); qs.splice(i,1); renderBuilderTo(qs,cid);
-}
-function handleBuilderImageUpload(event, cid, qi) {
-  const file=event.target.files[0]; if(!file) return;
-  if(file.size>2*1024*1024){ showToast('حجم الصورة يجب أن يكون أقل من 2MB','error'); return; }
-  const reader=new FileReader();
-  reader.onload=e=>{
-    const qs=getBuilderQuestions(cid);
-    qs[qi].image=e.target.result;
-    /* تحديث المعاينة بدون إعادة رسم كاملة */
-    const wrap=document.getElementById(cid+'-imgwrap-'+qi);
-    if(wrap){
-      wrap.style.display='';
-      const img=wrap.querySelector('img');
-      if(img) img.src=e.target.result;
-    }
-    /* تحديث نص زر الرفع */
-    const uploadBtn=wrap?.nextElementSibling?.querySelector('.q-img-upload-btn');
-    if(uploadBtn){ const t=uploadBtn.childNodes[0]; if(t) t.textContent='🖼️ تغيير الصورة'; }
-    showToast('تم إضافة الصورة ✓');
-  };
-  reader.readAsDataURL(file);
-}
-function removeBuilderImage(cid, qi) {
-  const qs=getBuilderQuestions(cid);
-  qs[qi].image='';
-  const wrap=document.getElementById(cid+'-imgwrap-'+qi);
-  if(wrap){ wrap.style.display='none'; const img=wrap.querySelector('img'); if(img) img.src=''; }
-  showToast('تم حذف الصورة');
-}
-
-/* Answer Map */
-function renderAnswerMap() {
-  const sec=$id('answer-map-section'), grid=$id('answer-map-grid');
-  if(!sec||!grid) return;
-  const qs=AppState.builderQuestions;
-  if(!qs.length){ sec.style.display='none'; return; }
-  sec.style.display='block';
-  const letters=['أ','ب','ج','د','هـ','و'];
-  const frag=document.createDocumentFragment();
-  qs.forEach((q,qi)=>{
-    const row=document.createElement('div'); row.className='answer-map-row'; row.dataset.qidx=qi;
-    let opts=''; q.choices.forEach((c,ci)=>{ opts+=`<option value="${ci}" ${q.correct===ci?'selected':''}>${letters[ci]||ci+1}</option>`; });
-    row.innerHTML=`<div class="answer-map-qnum">${qi+1}</div>
-      <div class="answer-map-qtext">${escapeHtml(q.text||'(بدون نص)')}</div>
-      <select class="answer-map-select ${q.correct>=0?'matched':''}"
-        onchange="AppState.builderQuestions[${qi}].correct=parseInt(this.value);AppState.builderQuestions[${qi}].correctAnswers=[parseInt(this.value)]">${opts}</select>`;
-    frag.appendChild(row);
-  });
-  grid.innerHTML=''; grid.appendChild(frag);
-}
-
-/* ── حفظ اختبار جديد ── */
-async function saveTest() {
-  if(!isAdminMode){ showToast('يجب تسجيل الدخول كأدمن','error'); return; }
-  const name=$id('new-test-name')?.value.trim();
-  if(!name){ showToast('أدخل اسم الاختبار','error'); return; }
-  if(!AppState.builderQuestions.length){ showToast('أضف سؤالاً على الأقل','error'); return; }
-  if(!AppState.builderQuestions.every(q=>q.text.trim()&&q.choices.every(c=>c.trim()))){
-    showToast('أكمل جميع الأسئلة والخيارات','error'); return;
-  }
-  const data={
-    name, subject:$id('new-test-subject')?.value.trim()||'',
-    timeLimit:parseInt($id('new-test-time')?.value)||0,
-    questions:AppState.builderQuestions.map(q=>({
-      text:q.text, choices:[...q.choices],
-      correctAnswers:q.correctAnswers?.length?q.correctAnswers:[q.correct],
-      correct:q.correctAnswers?.length?q.correctAnswers[0]:q.correct,
-      multiCorrect:q.multiCorrect||false, note:q.note||'', image:q.image||''
-    })), createdAt:Date.now()
-  };
-  const btn=$id('save-test-btn');
-  if(btn){ btn.disabled=true; btn.textContent='جارٍ الحفظ...'; }
-  try {
-    await dbSaveQuiz(data); showToast('تم حفظ الاختبار ✓');
-    setVal('new-test-name',''); setVal('new-test-subject',''); setVal('new-test-time','10');
-    AppState.builderQuestions=[]; renderBuilder();
-    setTimeout(()=>showPage('home'),900);
-  } catch(e){ showToast(e.message||'حدث خطأ','error'); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent='💾 حفظ الاختبار'; } }
-}
-
-/* ============================================================
-   تعديل الاختبارات المحفوظة
-============================================================ */
-function openEditQuiz(fid) {
-  const test=AppState.tests.find(t=>t.firebaseId===fid); if(!test) return;
-  AppState.editingQuizId=fid;
-  AppState.editQuestions=test.questions.map(q=>({...q, choices:[...q.choices], correctAnswers:[...(q.correctAnswers||[q.correct||0])], image:q.image||''}));
-  setVal('edit-test-name',    test.name||'');
-  setVal('edit-test-subject', test.subject||'');
-  setVal('edit-test-time',    test.timeLimit||0);
-  renderBuilderTo(AppState.editQuestions, 'edit-questions-builder');
-  openModal('edit-quiz-modal');
-}
-function addEditQuestion() {
-  AppState.editQuestions.push({text:'',choices:['','','',''],correct:0,correctAnswers:[0],multiCorrect:false,note:'',image:''});
-  renderBuilderTo(AppState.editQuestions,'edit-questions-builder');
-}
-async function saveEditedQuiz() {
-  if(!isAdminMode){ showToast('يجب تسجيل الدخول كأدمن','error'); return; }
-  const name=$id('edit-test-name')?.value.trim();
-  if(!name){ showToast('أدخل اسم الاختبار','error'); return; }
-  if(!AppState.editQuestions.length){ showToast('أضف سؤالاً على الأقل','error'); return; }
-  const oldTest=AppState.tests.find(t=>t.firebaseId===AppState.editingQuizId);
-  const data={
-    name, subject:$id('edit-test-subject')?.value.trim()||'',
-    timeLimit:parseInt($id('edit-test-time')?.value)||0,
-    questions:AppState.editQuestions.map(q=>({
-      text:q.text, choices:[...q.choices],
-      correctAnswers:q.correctAnswers?.length?q.correctAnswers:[q.correct],
-      correct:q.correctAnswers?.length?q.correctAnswers[0]:q.correct,
-      multiCorrect:q.multiCorrect||false, note:q.note||'', image:q.image||''
-    })),
-    createdAt:oldTest?.createdAt||Date.now(), updatedAt:Date.now()
-  };
-  const btn=$id('save-edit-btn');
-  if(btn){ btn.disabled=true; btn.textContent='جارٍ الحفظ...'; }
-  try {
-    await dbUpdateQuiz(AppState.editingQuizId, data);
-    closeModal('edit-quiz-modal'); showToast('تم حفظ التعديلات ✓');
-    AppState.editingQuizId=null; AppState.editQuestions=[];
-  } catch(e){ showToast(e.message||'حدث خطأ','error'); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent='💾 حفظ التعديلات'; } }
-}
-
-/* ============================================================
-   SMART PARSER
-============================================================ */
-function smartParseText(raw) {
-  let txt=raw.replace(/\r\n|\r/g,'\n').replace(/[\u200B-\u200D\uFEFF]/g,'')
-    .replace(/[أإآ]/g,'أ').replace(/ﻻ/g,'لا')
-    .replace(/[١٢٣٤٥٦٧٨٩٠]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d))
-    .replace(/\t/g,' ').replace(/ {2,}/g,' ');
-  const lines=txt.split('\n').map(l=>l.trim());
-  const RX_Q=/^(?:س(?:ؤال)?\s*\d*\s*[:.)]\s*|Q\s*\d*\s*[:.)]\s*|\d+\s*[.)]\s*(?!\s*[أبجدهوABCDa-f]\s*[.)]))(.+)/i;
-  const RX_C=/^(?:([أبجدهوABCDEFa-f])\s*[.):\-]\s*|(\d+)\s*[.)\-]\s*([أبجدهو])\s*[.):\-]?\s*|[•▪▸\-*]\s*)(.+)/i;
-  const qs=[]; let cur=null;
-  function push(){ if(cur&&cur.text.trim()&&cur.choices.length>=2) qs.push(cur); cur=null; }
-  lines.forEach(l=>{
-    if(!l) return;
-    const qm=l.match(RX_Q), cm=l.match(RX_C);
-    const qt=qm?qm[1].trim():(l.endsWith('؟')||l.endsWith('?'))?l:null;
-    const ct=cm?cm[cm.length-1].trim():null;
-    if(qt&&!ct){ push(); cur={text:qt,choices:[],correctAnswers:[0],note:''}; }
-    else if(ct&&cur) cur.choices.push(ct);
-    else if(ct&&!cur&&qs.length) qs[qs.length-1].choices.push(ct);
-    else if(cur){ if(!cur.choices.length) cur.text+=' '+l; else if(l.length<120&&!l.match(RX_Q)) cur.choices[cur.choices.length-1]+=' '+l; }
-    else if(l.endsWith('؟')||l.endsWith('?')){ push(); cur={text:l,choices:[],correctAnswers:[0],note:''}; }
-  });
-  push();
-  return qs.filter(q=>q.choices.length>=2).map(q=>({...q,text:q.text.trim(),choices:q.choices.map(c=>c.trim()).filter(c=>c)}));
-}
-function applyBulkAnswers(bulk) {
-  const parts=bulk.replace(/،/g,',').split(/[\s,]+/).map(p=>p.trim()).filter(Boolean);
-  const M={'أ':1,'ا':1,'A':1,'a':1,'1':1,'ب':2,'B':2,'b':2,'2':2,'ج':3,'C':3,'c':3,'3':3,'د':4,'D':4,'d':4,'4':4,'ه':5,'هـ':5,'E':5,'e':5,'5':5,'و':6,'F':6,'f':6,'6':6};
-  parts.forEach((p,i)=>{
-    if(i>=AppState.parsedQuestions.length) return;
-    const idx=(M[p]||parseInt(p)||1)-1;
-    if(idx>=0){ AppState.parsedQuestions[i].correctAnswers=[idx]; AppState.parsedQuestions[i].correct=idx; }
-  });
-  showToast('تم تعيين الإجابات تلقائياً ✓');
-}
-function parseQuestions() {
-  const raw=$id('parse-input')?.value.trim();
-  if(!raw){ showToast('الصق نصاً أولاً','error'); return; }
-  AppState.parsedQuestions=smartParseText(raw);
-  if(!AppState.parsedQuestions.length){ showToast('لم يتم التعرف على أسئلة','error'); return; }
-  const bulk=$id('bulk-answers-input')?.value.trim();
-  if(bulk) applyBulkAnswers(bulk);
-  renderParsedQuestions(); showToast(`تم التعرف على ${AppState.parsedQuestions.length} سؤال ✓`);
-}
-function renderParsedQuestions() {
-  const pr=$id('parse-preview'), list=$id('parse-questions-list');
-  if(!pr||!list) return;
-  const letters=['أ','ب','ج','د','هـ','و'];
-  pr.style.display='block';
-  setText('parse-preview-title',`✅ تم التحليل — حدد الإجابة الصحيحة لكل سؤال (${AppState.parsedQuestions.length} سؤال)`);
-  const frag=document.createDocumentFragment();
-  AppState.parsedQuestions.forEach((q,qi)=>{
-    const item=document.createElement('div'); item.className='parsed-q-item';
-    let ch='';
-    q.choices.forEach((c,ci)=>{
-      const checked=(q.correctAnswers||[q.correct||0]).includes(ci)?'checked':'';
-      ch+=`<label class="parsed-choice-row"><input type="checkbox" ${checked} onchange="toggleParsedCorrect(${qi},${ci},this.checked)"><span>${letters[ci]||ci+1}. ${escapeHtml(c)}</span></label>`;
-    });
-    item.innerHTML=`<div class="parsed-q-text">${qi+1}. ${escapeHtml(q.text)}</div><div class="parsed-choices">${ch}</div>
-      <textarea class="parsed-note-input" placeholder="ملاحظة المعلم..." oninput="AppState.parsedQuestions[${qi}].note=this.value">${escapeHtml(q.note||'')}</textarea>`;
-    frag.appendChild(item);
-  });
-  list.innerHTML=''; list.appendChild(frag);
-}
-function toggleParsedCorrect(qi,ci,checked) {
-  const q=AppState.parsedQuestions[qi]; if(!q) return;
-  if(!Array.isArray(q.correctAnswers)) q.correctAnswers=[q.correct||0];
-  if(checked){ if(!q.correctAnswers.includes(ci)) q.correctAnswers.push(ci); }
-  else{ q.correctAnswers=q.correctAnswers.filter(x=>x!==ci); if(!q.correctAnswers.length) q.correctAnswers=[ci]; }
-  q.correct=q.correctAnswers[0];
-}
-async function saveParsedTest() {
-  if(!isAdminMode){ showToast('يجب تسجيل الدخول كأدمن','error'); return; }
-  const name=$id('parse-test-name')?.value.trim();
-  if(!name){ showToast('أدخل اسم الاختبار','error'); return; }
-  if(!AppState.parsedQuestions.length){ showToast('لا توجد أسئلة','error'); return; }
-  const data={
-    name, subject:$id('parse-test-subject')?.value.trim()||'',
-    timeLimit:parseInt($id('parse-test-time')?.value)||0,
-    questions:AppState.parsedQuestions.map(q=>({
-      text:q.text, choices:[...q.choices],
-      correctAnswers:q.correctAnswers||[q.correct||0],
-      correct:(q.correctAnswers||[q.correct||0])[0],
-      multiCorrect:(q.correctAnswers||[]).length>1, note:q.note||''
-    })), createdAt:Date.now()
-  };
-  const btn=$id('save-parsed-btn');
-  if(btn){ btn.disabled=true; btn.textContent='جارٍ الحفظ...'; }
-  try {
-    await dbSaveQuiz(data); showToast(`تم حفظ "${name}" ✓`);
-    setVal('parse-input',''); setVal('bulk-answers-input',''); setVal('parse-test-name',''); setVal('parse-test-subject','');
-    const pr=$id('parse-preview'); if(pr) pr.style.display='none';
-    AppState.parsedQuestions=[]; setTimeout(()=>showPage('home'),900);
-  } catch(e){ showToast(e.message||'حدث خطأ','error'); }
-  finally{ if(btn){ btn.disabled=false; btn.textContent='💾 حفظ الاختبار'; } }
-}
-
-/* ============================================================
-   QUIZ ENGINE
-   - الطالب يختار إجابة واحدة فقط (حتى لو المعلم حدد إجابات متعددة)
-   - أي إجابة صحيحة تُعتبر صحيحة
-   - يمكن تغيير الإجابة في أي وقت قبل الانتقال
-   - التنقل الحر بين الأسئلة
-   - ملاحظة المعلم تظهر مع السؤال مباشرة
-============================================================ */
-function getCorrectAnswers(q) {
-  if(Array.isArray(q.correctAnswers)&&q.correctAnswers.length) return q.correctAnswers;
-  if(typeof q.correct==='number') return [q.correct];
-  return [0];
-}
-function isAnswerCorrect(q,ua) {
-  const correct=getCorrectAnswers(q);
-  if(ua===null||ua===undefined||ua===-1) return false;
-  const a=Array.isArray(ua)?ua[0]:ua;
-  return correct.includes(a);
-}
-
-/* ── بدء الاختبار ── */
-function startQuiz(fid) {
-  const test=AppState.tests.find(t=>t.firebaseId===fid);
-  if(!test?.questions?.length){ showToast('هذا الاختبار لا يحتوي على أسئلة!','error'); return; }
-  const saved=AppState.progress[fid];
-  if(saved&&saved.answers?.some(a=>a!==null)) {
-    if(confirm('لديك تقدم محفوظ. هل تريد الاستمرار من حيث توقفت؟')){ resumeQuiz(test,saved); return; }
-  }
-  initQuizSession(test);
-}
-function startCustomQuiz(questions,title) {
-  if(!questions.length){ showToast('لا توجد أسئلة','error'); return; }
-  initQuizSession({id:'__practice__',firebaseId:'__practice__',name:title,subject:'تدريب الأخطاء',timeLimit:0,questions});
-}
-function initQuizSession(test) {
-  AppState.currentTest=test; AppState.currentQ=0;
-  AppState.userAnswers=new Array(test.questions.length).fill(null);
-  AppState.elapsedSecs=0;
-  showPage('quiz');
-  setText('quiz-title',    test.name);
-  setText('quiz-subtitle', (test.subject?escapeHtml(test.subject):'')+' • '+test.questions.length+' سؤال');
-  startTimer(); renderQuestion(); renderNavStrip();
-}
-function resumeQuiz(test,saved) {
-  AppState.currentTest=test; AppState.currentQ=saved.currentQ||0;
-  AppState.userAnswers=saved.answers||new Array(test.questions.length).fill(null);
-  AppState.elapsedSecs=saved.elapsed||0;
-  showPage('quiz');
-  setText('quiz-title',    test.name);
-  setText('quiz-subtitle', (test.subject?escapeHtml(test.subject):'')+' • '+test.questions.length+' سؤال');
-  startTimer(); renderQuestion(); renderNavStrip();
-  showToast('استُؤنف الاختبار ✓','info');
-}
-
-/* ── Timer ── */
-function startTimer() {
-  clearInterval(AppState.timerInterval);
-  const limit=(AppState.currentTest.timeLimit||0)*60;
-  const pill=$id('timer-pill');
-  AppState.timerInterval=setInterval(()=>{
-    AppState.elapsedSecs++;
-    if(AppState.elapsedSecs%30===0) saveProgress();
-    if(limit>0) {
-      const rem=limit-AppState.elapsedSecs;
-      if(rem<=0){ clearInterval(AppState.timerInterval); submitQuiz(); return; }
-      if(pill){ pill.className='timer-pill'+(rem<=60?' danger':rem<=120?' warning':''); pill.innerHTML=`⏱️ <span>${fmtTime(rem)}</span>`; }
-    } else {
-      if(pill) pill.innerHTML=`⏱️ <span>${fmtTime(AppState.elapsedSecs)}</span>`;
-    }
-  },1000);
-}
-
-/* ── Progress Save ── */
-function saveProgress() {
-  const {currentTest,currentQ,userAnswers,elapsedSecs}=AppState;
-  if(!currentTest||currentTest.id==='__practice__') return;
-  AppState.progress[currentTest.id]={currentQ,answers:[...userAnswers],elapsed:elapsedSecs};
-  localStorage.setItem('quizProgress',JSON.stringify(AppState.progress));
-}
-function clearProgress(tid) { delete AppState.progress[tid]; localStorage.setItem('quizProgress',JSON.stringify(AppState.progress)); }
-
-/* ── شريط التنقل ── */
-function renderNavStrip() {
-  const strip=$id('q-nav-strip'); if(!strip) return;
-  const {currentTest,currentQ,userAnswers}=AppState;
-  strip.innerHTML='';
-  currentTest.questions.forEach((_,i)=>{
-    const d=document.createElement('div');
-    const ua=userAnswers[i];
-    let cls='unanswered';
-    if(i===currentQ) cls='current';
-    else if(ua===-1) cls='skipped';
-    else if(ua!==null) cls='answered';
-    d.className='q-nav-dot '+cls;
-    d.textContent=i+1;
-    d.title=`السؤال ${i+1}`;
-    d.onclick=()=>jumpToQuestion(i);
-    strip.appendChild(d);
-  });
-}
-
-/* ── الانتقال المباشر لسؤال معين ── */
-function jumpToQuestion(i) {
-  AppState.currentQ=i; renderQuestion(); renderNavStrip();
-}
-
-/* ── عرض السؤال ── */
-function renderQuestion() {
-  const {currentTest,currentQ,userAnswers}=AppState;
-  const q=currentTest.questions[currentQ];
-  const pct=(currentQ/currentTest.questions.length)*100;
-  const pf=$id('q-progress-fill'); if(pf) pf.style.width=pct+'%';
-  setText('q-counter',(currentQ+1)+' / '+currentTest.questions.length);
-  setText('q-num','السؤال '+(currentQ+1));
-  setText('q-text',q.text);
-
-  /* صورة السؤال */
-  const qImgEl=$id('q-image-display');
-  if(qImgEl){
-    if(q.image&&q.image.trim()){ qImgEl.src=q.image; qImgEl.style.display='block'; }
-    else { qImgEl.src=''; qImgEl.style.display='none'; }
-  }
-
-  /* ملاحظة المعلم تظهر أعلى الخيارات مباشرة إن وجدت والإعداد مفعّل */
-  const notePre=$id('teacher-note-pre');
-  if(notePre) {
-    if(q.note&&q.note.trim()&&AppState.adminSettings.showNotesLive!==false) {
-      notePre.textContent=q.note; notePre.style.display='flex';
-    } else {
-      notePre.style.display='none';
-    }
-  }
-  /* إخفاء مربع الملاحظة السفلي (غير مستخدم الآن) */
-  const nb=$id('teacher-note-box'); if(nb) nb.style.display='none';
-
-  /* بناء الخيارات — يمكن تغيير الإجابة دائماً */
-  const letters=['أ','ب','ج','د','هـ','و'];
-  const container=$id('choices-container'); if(!container) return;
-  const frag=document.createDocumentFragment();
-  const ua=userAnswers[currentQ];
-  q.choices.forEach((c,i)=>{
-    const div=document.createElement('div');
-    div.className='choice'+(ua===i?' selected':'');
-    div.id='choice-'+i;
-    div.onclick=()=>selectAnswer(i);
-    div.innerHTML=`<div class="choice-letter">${letters[i]||(i+1)}</div><div class="choice-text">${escapeHtml(c)}</div>`;
-    frag.appendChild(div);
-  });
-  container.innerHTML=''; container.appendChild(frag);
-
-  /* أزرار التنقل */
-  const prevBtn=$id('prev-btn'), nextBtn=$id('next-btn'), skipBtn=$id('skip-btn');
-  if(prevBtn) prevBtn.disabled=(currentQ===0);
-  if(nextBtn) nextBtn.textContent=currentQ===currentTest.questions.length-1?'إنهاء ✓':'التالي ←';
-  if(skipBtn) skipBtn.style.display=ua!==null?'none':'';
-}
-
-/* ── اختيار الإجابة — يمكن التغيير دائماً ── */
-function selectAnswer(i) {
-  AppState.userAnswers[AppState.currentQ]=i;
-  /* تحديث الخيارات بصرياً */
-  document.querySelectorAll('.choice').forEach((el,ci)=>{
-    el.classList.toggle('selected', ci===i);
-  });
-  /* إخفاء زر التخطي بعد الاختيار */
-  const sb=$id('skip-btn'); if(sb) sb.style.display='none';
-  saveProgress(); renderNavStrip();
-}
-
-/* ── التنقل ── */
-function prevQuestion() {
-  if(AppState.currentQ>0){ AppState.currentQ--; renderQuestion(); renderNavStrip(); }
-}
-function nextQuestion() {
-  const {currentQ,currentTest}=AppState;
-  if(currentQ<currentTest.questions.length-1){ AppState.currentQ++; renderQuestion(); renderNavStrip(); }
-  else openFinalReview();
-}
-function skipQuestion() {
-  AppState.userAnswers[AppState.currentQ]=-1;
-  saveProgress(); renderNavStrip(); nextQuestion();
-}
-function confirmLeaveQuiz() { openModal('leave-modal'); }
-function leaveQuiz() { clearInterval(AppState.timerInterval); closeModal('leave-modal'); showPage('home'); }
-
-/* ── مراجعة نهائية قبل التسليم ── */
-function openFinalReview() {
-  const {currentTest,userAnswers}=AppState;
-  const qs=currentTest.questions;
-  const answered=userAnswers.filter(a=>a!==null&&a!==-1).length;
-  const skipped=userAnswers.filter(a=>a===-1).length;
-  const unanswered=userAnswers.filter(a=>a===null).length;
-
-  setText('final-review-summary',
-    `إجمالي الأسئلة: ${qs.length} • أجبت على: ${answered} • تخطيت: ${skipped} • لم تجب على: ${unanswered}`);
-
-  const letters=['أ','ب','ج','د','هـ','و'];
-  const list=$id('final-review-list'); if(!list) return;
-  list.innerHTML='';
-  qs.forEach((q,i)=>{
-    const ua=userAnswers[i];
-    const item=document.createElement('div');
-    const isAnswered=ua!==null&&ua!==-1;
-    const isSkipped=ua===-1;
-    item.className='final-review-item'+(isAnswered?' answered':isSkipped?' skipped':'');
-    item.onclick=()=>{ closeModal('final-review-modal'); jumpToQuestion(i); };
-    const ansText=isAnswered?`${letters[ua]||ua+1}. ${escapeHtml(q.choices[ua]||'')}`:isSkipped?'تم التخطي':'لم تُجب بعد';
-    item.innerHTML=`
-      <div class="fri-num">السؤال ${i+1}</div>
-      <div class="fri-q">${escapeHtml(q.text)}</div>
-      <div class="fri-ans ${isAnswered?'has-answer':isSkipped?'no-answer':'no-answer'}">${escapeHtml(ansText)}</div>`;
-    list.appendChild(item);
-  });
-  openModal('final-review-modal');
-}
-
-/* ── تسليم الاختبار النهائي ── */
-function submitQuiz() {
-  closeModal('final-review-modal');
-  clearInterval(AppState.timerInterval);
-  const {currentTest,userAnswers,elapsedSecs}=AppState;
-  const qs=currentTest.questions;
-  let correct=0,skipped=0; const wrongList=[];
-  qs.forEach((q,i)=>{
-    const ua=userAnswers[i];
-    if(ua===-1||ua===null) skipped++;
-    else if(isAnswerCorrect(q,ua)) correct++;
-    else wrongList.push({testName:currentTest.name,testId:currentTest.id,qIndex:i,q,userAnswer:ua,timestamp:Date.now(),attempts:getErrorAttemptCount(currentTest.id,i)+1});
-  });
-  const pct=Math.round(correct/qs.length*100);
-  if(currentTest.id!=='__practice__') {
-    AppState.scores[currentTest.id]=pct;
-    localStorage.setItem('quizScores',JSON.stringify(AppState.scores));
-    clearProgress(currentTest.id);
-    dbSaveAnalytics(currentTest.id,{score:pct,correct,wrong:qs.length-correct-skipped,skipped,total:qs.length,elapsed:elapsedSecs});
-  }
-  updateErrorTracking(wrongList);
-  showResults(pct,correct,skipped,qs.length,elapsedSecs);
-}
-
-/* ── Smart Error Tracking ── */
-function getErrorAttemptCount(testId,qIndex) {
-  return AppState.errors.find(e=>e.testId===testId&&e.qIndex===qIndex)?.attempts||0;
-}
-function updateErrorTracking(wrongList) {
-  const {currentTest}=AppState;
-  if(AppState.adminSettings.categorizedErrors) {
-    const key='quizErrors_'+(currentTest.id||'general');
-    let cat=JSON.parse(localStorage.getItem(key)||'[]');
-    wrongList.forEach(w=>{ const idx=cat.findIndex(e=>e.testId===w.testId&&e.qIndex===w.qIndex); if(idx>=0) cat[idx]={...cat[idx],...w,attempts:(cat[idx].attempts||1)+1}; else cat.push(w); });
-    AppState.userAnswers.forEach((ua,i)=>{ if(ua!==null&&ua!==-1&&isAnswerCorrect(currentTest.questions[i],ua)) cat=cat.filter(e=>!(e.testId===currentTest.id&&e.qIndex===i)); });
-    localStorage.setItem(key,JSON.stringify(cat));
-  }
-  wrongList.forEach(w=>{ const idx=AppState.errors.findIndex(e=>e.testId===w.testId&&e.qIndex===w.qIndex); if(idx>=0) AppState.errors[idx]={...AppState.errors[idx],...w,attempts:(AppState.errors[idx].attempts||1)+1}; else AppState.errors.push(w); });
-  AppState.userAnswers.forEach((ua,i)=>{ if(ua!==null&&ua!==-1&&isAnswerCorrect(currentTest.questions[i],ua)) AppState.errors=AppState.errors.filter(e=>!(e.testId===currentTest.id&&e.qIndex===i)); });
-  AppState.errors.sort((a,b)=>(b.attempts||1)-(a.attempts||1));
-  localStorage.setItem('quizErrors',JSON.stringify(AppState.errors));
-}
-
-/* ── Results ── */
-function showResults(pct,correct,skipped,total,elapsed) {
-  showPage('results');
-  const wrong=total-correct-skipped;
-  const icon=pct>=90?'🏆':pct>=70?'🎉':pct>=50?'📚':'💪';
-  const grade=pct>=90?'ممتاز':pct>=80?'جيد جداً':pct>=70?'جيد':pct>=60?'مقبول':'راجع المادة';
-  const gColor=pct>=70?'var(--green)':pct>=50?'var(--accent)':'var(--red)';
-  const arcColor=pct>=70?'#10b981':pct>=50?'#fbbf24':'#ef4444';
-  setText('results-icon',icon); setText('results-score',pct+'%'); setText('score-pct',pct+'%');
-  setText('results-label',AppState.currentTest.name);
-  const ge=$id('results-grade'); if(ge){ ge.textContent=grade; ge.style.cssText=`background:${gColor}22;color:${gColor};border:1px solid ${gColor}44`; }
-  setText('r-correct',correct); setText('r-wrong',wrong); setText('r-skipped',skipped); setText('r-time',fmtTime(elapsed));
-  const arc=$id('score-arc'); if(arc){ arc.style.stroke=arcColor; setTimeout(()=>{ arc.style.strokeDashoffset=326.7-(326.7*pct/100); },100); }
-  renderBreakdownDots(); renderReviewList();
-}
-function renderBreakdownDots() {
-  const {currentTest,userAnswers}=AppState;
-  const grid=$id('breakdown-grid'); if(!grid) return;
-  const frag=document.createDocumentFragment();
-  currentTest.questions.forEach((q,i)=>{
-    const ua=userAnswers[i]; const dot=document.createElement('div');
-    let cls='s',sym='⏭';
-    if(ua!==null&&ua!==-1&&isAnswerCorrect(q,ua)){ cls='c';sym=i+1; }
-    else if(ua!==null&&ua!==-1){ cls='w';sym=i+1; }
-    dot.className='breakdown-dot '+cls; dot.title='سؤال '+(i+1); dot.textContent=sym;
-    frag.appendChild(dot);
-  });
-  grid.innerHTML=''; grid.appendChild(frag);
-}
-function renderReviewList() {
-  const {currentTest,userAnswers}=AppState;
-  const qs=currentTest.questions, letters=['أ','ب','ج','د','هـ','و'];
-  const rvList=$id('review-list'); if(!rvList) return;
-  const frag=document.createDocumentFragment();
-  qs.forEach((q,i)=>{
-    const ua=userAnswers[i], correct=getCorrectAnswers(q);
-    const isCorrect=ua!==null&&ua!==-1&&isAnswerCorrect(q,ua);
-    const item=document.createElement('div'); item.className='review-item '+(isCorrect?'r-correct':'r-wrong');
-    let ch='';
-    q.choices.forEach((c,ci)=>{
-      const isCor=correct.includes(ci), isUser=ua===ci;
-      let cls2=''; if(isCor) cls2='r-answer'; else if(isUser&&!isCor) cls2='r-user-wrong';
-      if(cls2) ch+=`<div class="review-choice ${cls2}">${isCor?'✅':'❌'} ${letters[ci]||ci+1}. ${escapeHtml(c)}</div>`;
-    });
-    const noteHtml=q.note?`<div class="review-note"><span>💡 ملاحظة المعلم</span>${escapeHtml(q.note)}</div>`:'';
-    const imgHtml=q.image?`<img src="${q.image}" class="review-q-image" alt="صورة السؤال"/>`:'';
-    item.innerHTML=`<div class="review-q">${i+1}. ${escapeHtml(q.text)}</div>${imgHtml}<div class="review-choices">${ch}</div>${noteHtml}`;
-    frag.appendChild(item);
-  });
-  rvList.innerHTML=''; rvList.appendChild(frag);
-}
-function retryQuiz() {
-  const {currentTest}=AppState;
-  if(currentTest.firebaseId!=='__practice__') startQuiz(currentTest.firebaseId);
-  else startCustomQuiz(currentTest.questions,currentTest.name);
-}
-
-/* ── Errors Page ── */
-function renderErrors() {
-  const container=$id('errors-container'), panel=$id('practice-panel');
-  const {errors,adminSettings}=AppState;
-  if(!errors.length){ if(panel) panel.style.display='none'; if(container) container.innerHTML='<div class="empty-state"><div class="icon">🎉</div><p>لا توجد أخطاء مسجّلة — أحسنت!</p></div>'; return; }
-  if(panel) panel.style.display='block';
-  const size=parseInt($id('practice-size')?.value)||10;
-  setText('practice-splits-info',`${errors.length} خطأ مسجّل • ${Math.ceil(errors.length/size)} جلسة (${size} سؤال لكل جلسة)`);
-  const grouped={};
-  errors.forEach(e=>{ const k=adminSettings.categorizedErrors?(e.testId||'general'):'all'; if(!grouped[k]) grouped[k]={name:e.testName||'الكل',items:[]}; grouped[k].items.push(e); });
-  const letters=['أ','ب','ج','د','هـ','و'];
-  const frag=document.createDocumentFragment();
-  Object.entries(grouped).forEach(([key,g])=>{
-    const folder=document.createElement('div'); folder.className='errors-folder';
-    const bid='errfolder_'+key.replace(/[^a-z0-9]/gi,'_');
-    let ih='';
-    g.items.forEach((e,idx)=>{
-      const ua=e.userAnswer, ci=getCorrectAnswers(e.q);
-      const cText=ci.map(c=>`${letters[c]||c+1}. ${escapeHtml(e.q.choices[c]||'—')}`).join(' ، ');
-      const uText=ua>=0?`${letters[ua]||'?'}. ${escapeHtml(e.q.choices[ua]||'—')}`:null;
-      const at=(e.attempts>1)?`<span class="error-attempts">🔁 ${e.attempts} محاولات</span>`:'';
-      ih+=`<div class="error-item"><div class="error-q-num">${idx+1}</div><div class="error-content"><div class="error-q">${escapeHtml(e.q.text)}</div><div class="error-answers">${uText?`<span class="error-wrong">❌ إجابتك: ${uText}</span>`:'<span class="error-wrong">⏭️ تخطي</span>'}<span class="error-correct">✅ الصحيح: ${cText}</span>${at}</div></div></div>`;
-    });
-    folder.innerHTML=`
-      <div class="folder-top" onclick="const b=document.getElementById('${bid}');b.style.display=b.style.display==='none'?'flex':'none'">
-        <div class="folder-top-left"><span>📁</span><span class="folder-title">${escapeHtml(g.name)}</span></div>
-        <div class="folder-actions"><button class="folder-retake-btn" onclick="event.stopPropagation();retakeErrorsForQuiz('${key}')">🔁 إعادة التدريب</button><span class="folder-count">${g.items.length} خطأ</span></div>
+      <div class="task-sidebar${_taskSbCollapsed?' collapsed-ts':''}" id="taskSidebar">
+        <div class="task-panel-hdr">
+          <span class="task-panel-title">الملخص</span>
+          <button class="ts-collapse-btn" onclick="UI.toggleTaskSidebar()">←</button>
+        </div>
+        <div class="task-filters">
+          <button class="tf-btn${_taskFilter==='all'?' active':''}" onclick="UI.setTaskFilter('all','${pg.id}')">الكل</button>
+          <button class="tf-btn${_taskFilter==='pending'?' active':''}" onclick="UI.setTaskFilter('pending','${pg.id}')">قيد</button>
+          <button class="tf-btn${_taskFilter==='done'?' active':''}" onclick="UI.setTaskFilter('done','${pg.id}')">منجز</button>
+        </div>
+        <div class="task-list-scroll" id="taskListScroll"></div>
       </div>
-      <div class="folder-body" id="${bid}" style="display:none">${ih}</div>`;
-    frag.appendChild(folder);
-  });
-  if(container){ container.innerHTML=''; container.appendChild(frag); }
-}
-function retakeErrorsForQuiz(key) {
-  const sub=key==='all'?AppState.errors:AppState.errors.filter(e=>e.testId===key);
-  if(!sub.length){ showToast('لا توجد أخطاء','error'); return; }
-  const sorted=[...sub].sort((a,b)=>(b.attempts||1)-(a.attempts||1));
-  startCustomQuiz(sorted.map(e=>({...e.q})),`تدريب أخطاء: ${sorted[0]?.testName||'عام'}`);
-}
-function startPracticeSession(all=false) {
-  const {errors}=AppState;
-  if(!errors.length){ showToast('لا توجد أخطاء','error'); return; }
-  const sorted=[...errors].sort((a,b)=>(b.attempts||1)-(a.attempts||1));
-  const questions=sorted.map(e=>({...e.q}));
-  if(all){ startCustomQuiz(questions,'تدريب الأخطاء — كل الأسئلة'); return; }
-  const size=parseInt($id('practice-size')?.value)||10;
-  const splits=[]; for(let i=0;i<questions.length;i+=size) splits.push(questions.slice(i,i+size));
-  if(splits.length===1){ startCustomQuiz(splits[0],'تدريب الأخطاء — جلسة 1'); return; }
-  setText('practice-modal-desc',`${questions.length} سؤال مقسّم على ${splits.length} جلسات (${size} سؤال لكل جلسة) — مرتبة حسب الصعوبة`);
-  let lh='';
-  splits.forEach((chunk,i)=>{ lh+=`<div class="manage-item"><div class="manage-item-info"><div class="manage-item-name">الجلسة ${i+1}</div><div class="manage-item-meta">${chunk.length} سؤال</div></div><button class="btn btn-primary" style="font-size:0.82rem;padding:8px 14px" onclick="closeModal('practice-modal');startCustomQuiz(window.__pChunks[${i}],'تدريب الأخطاء — جلسة ${i+1}')">▶ ابدأ</button></div>`; });
-  const le=$id('practice-sessions-list'); if(le) le.innerHTML=lh;
-  window.__pChunks=splits; openModal('practice-modal');
+    </div>`;
+    renderTaskContent(pg);
+    renderTaskList(pg);
+  }
+
+  function renderTaskContent(pg) {
+    const el=document.getElementById('taskContent'); if(!el) return;
+    let tasks=TaskManager.getTasks(pg.id);
+    if(_taskSearch) tasks=tasks.filter(t=>t.name.toLowerCase().includes(_taskSearch.toLowerCase())||t.desc.toLowerCase().includes(_taskSearch.toLowerCase()));
+    const s=TaskManager.getStats(pg.id);
+    const noTasks=tasks.length===0;
+    let html=`<div style="margin-bottom:1rem">
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+        <div style="flex:1;background:var(--bg3);border-radius:99px;height:6px;overflow:hidden">
+          <div style="width:${s.pct}%;height:100%;background:var(--g-accent);border-radius:99px;transition:width .5s"></div>
+        </div>
+        <span style="font-size:.7rem;color:var(--muted);white-space:nowrap">${s.done}/${s.total} • ${s.pct}%</span>
+      </div>
+    </div>`;
+    if(noTasks){
+      html+=`<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">لا توجد مهام</div><div class="empty-sub">ابدأ بإضافة مهمتك الأولى</div><button class="btn btn-primary" style="margin-top:.8rem" onclick="Tasks.openAdd('${pg.id}')">+ إضافة مهمة</button></div>`;
+    } else {
+      const byCat={};
+      tasks.forEach(t=>{const cat=t.category||'عام';if(!byCat[cat])byCat[cat]=[];byCat[cat].push(t);});
+      Object.entries(byCat).forEach(([cat,ts])=>{
+        if(Object.keys(byCat).length>1) html+=`<div style="font-size:.65rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:.7rem 0 .3rem">${esc(cat)}</div>`;
+        ts.forEach(t=>{
+          const due=t.due?`<span class="ti-due${t.due&&new Date(t.due)<new Date()&&!t.done?' overdue':''}">📅 ${t.due}</span>`:'';
+          html+=`<div class="task-item${t.done?' done':''}" id="ti_${t.id}">
+            <div class="ti-row">
+              <div class="ti-check" onclick="event.stopPropagation();_toggleTaskItem('${pg.id}','${t.id}')">${t.done?'✓':''}</div>
+              <div class="ti-info" onclick="Tasks.openEdit('${pg.id}','${t.id}')">
+                <div class="ti-name"><span class="ti-prio ${t.priority||'low'}"></span>${esc(t.name)}</div>
+                <div class="ti-meta">${t.desc?esc(t.desc.slice(0,60))+' ':''}${due}</div>
+              </div>
+            </div>
+          </div>`;
+        });
+      });
+    }
+    el.innerHTML=html;
+  }
+
+  function renderTaskList(pg) {
+    const el=document.getElementById('taskListScroll'); if(!el) return;
+    let tasks=TaskManager.getTasks(pg.id);
+    if(_taskFilter==='done') tasks=tasks.filter(t=>t.done);
+    else if(_taskFilter==='pending') tasks=tasks.filter(t=>!t.done);
+    if(!tasks.length){ el.innerHTML=`<div style="text-align:center;padding:1.5rem;font-size:.72rem;color:var(--muted)">لا توجد مهام</div>`; return; }
+    el.innerHTML=tasks.map(t=>`<div class="task-item${t.done?' done':''}" onclick="_toggleTaskItem('${pg.id}','${t.id}')">
+      <div class="ti-row">
+        <div class="ti-check">${t.done?'✓':''}</div>
+        <div class="ti-name" style="font-size:.7rem">${esc(t.name.slice(0,30))}${t.name.length>30?'...':''}</div>
+      </div>
+    </div>`).join('');
+  }
+
+  function filterTasks(q) { _taskSearch=q; const pg=Pages.getCurrent(); if(pg) renderTaskContent(pg); }
+  function setTaskFilter(f,pgId) {
+    _taskFilter=f;
+    document.querySelectorAll('.tf-btn').forEach(b=>b.classList.toggle('active',b.textContent.includes(f==='all'?'الكل':f==='pending'?'قيد':'منجز')));
+    const u=UserManager.getCurrent(); const pg=(u?.pages||[]).find(p=>p.id===pgId); if(pg) renderTaskList(pg);
+  }
+  function toggleTaskSidebar() {
+    _taskSbCollapsed=!_taskSbCollapsed;
+    const sb=document.getElementById('taskSidebar'); if(sb) sb.classList.toggle('collapsed-ts',_taskSbCollapsed);
+  }
+
+  /* ── VISUAL VIEW ── */
+  function _renderVisualView(pg) {
+    const s=GridManager.getStats(pg);
+    const COLORS=GridManager.getColors();
+    const colorSwatches=COLORS.map((c,i)=>`<div class="color-sw" data-ci="${i+1}" style="background:${c}" onclick="selectColor(${i+1})" title="${c}"></div>`).join('');
+    const c=document.getElementById('content');
+    c.innerHTML=`
+    <div class="visual-view">
+      <div class="visual-toolbar">
+        <div class="drop" id="shapeDrop">
+          <button class="btn btn-sm" id="shapeLabel" onclick="UI.toggleDrop('shapeDrop')">⬤ الشكل</button>
+          <div class="drop-menu" id="shapeDropMenu">
+            <div class="shp-opt-card drop-item" onclick="selectShape('circle');UI.closeAllDrops()">⬤ دائرة</div>
+            <div class="shp-opt-card drop-item" onclick="selectShape('square');UI.closeAllDrops()">■ مربع</div>
+            <div class="shp-opt-card drop-item" onclick="selectShape('star');UI.closeAllDrops()">★ نجمة</div>
+            <div class="shp-opt-card drop-item" onclick="selectShape('hex');UI.closeAllDrops()">⬡ سداسي</div>
+          </div>
+        </div>
+        <div class="drop" id="colorDrop">
+          <button class="btn btn-sm" onclick="UI.toggleDrop('colorDrop')"><span id="colorPrevDot" style="width:10px;height:10px;border-radius:50%;background:var(--c1);display:inline-block"></span> اللون</button>
+          <div class="drop-menu" id="colorDropMenu" style="min-width:180px">
+            <div style="padding:.3rem .4rem"><div class="color-row">${colorSwatches}</div></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:3px">
+          <button class="size-pill" onclick="GridManager.setSize(32,this)">XS</button>
+          <button class="size-pill sel" onclick="GridManager.setSize(44,this)">S</button>
+          <button class="size-pill" onclick="GridManager.setSize(56,this)">M</button>
+          <button class="size-pill" onclick="GridManager.setSize(72,this)">L</button>
+        </div>
+        <button class="btn btn-sm" onclick="_toggleNumsUI(Pages.getCurrent())" id="numsToggleLabel">تفعيل الترقيم</button>
+        <button class="btn btn-sm" onclick="GridManager.undo()">↩</button>
+        <button class="btn btn-sm" onclick="GridManager.redo()">↪</button>
+        <button class="btn btn-sm" onclick="document.getElementById('bulkFillCount').value=10;UI.openModal('modalBulkFill')">⚡ تلوين سريع</button>
+        <button class="btn btn-sm" onclick="_openAddCells()">+ عناصر</button>
+      </div>
+      <div class="progress-hero">
+        <div class="ph-row">
+          <div class="ph-pct" id="phPct">${s.pct}%</div>
+          <div class="ph-info">
+            <div class="ph-label">${esc(pg.name)}</div>
+            <div class="ph-bar-bg"><div class="ph-bar-fill" id="phBar" style="width:${s.pct}%"></div></div>
+            <div class="ph-sub" id="phSub">${s.filled} / ${s.total} عنصر • ${s.remaining} متبقي</div>
+          </div>
+        </div>
+      </div>
+      <div class="shape-grid" id="shapeGrid"></div>
+    </div>
+    <div class="undo-bar" id="undoBar">
+      <span id="undoMsg">تم التغيير</span>
+      <button class="btn btn-sm btn-primary" onclick="GridManager.undo()">↩ تراجع</button>
+    </div>`;
+    GridManager.renderGrid(pg, document.getElementById('shapeGrid'));
+  }
+
+  function updateVisualProgress(pg) {
+    if(!pg) return;
+    const s=GridManager.getStats(pg);
+    const pct=document.getElementById('phPct'); if(pct) pct.textContent=s.pct+'%';
+    const bar=document.getElementById('phBar'); if(bar) bar.style.width=s.pct+'%';
+    const sub=document.getElementById('phSub'); if(sub) sub.textContent=`${s.filled} / ${s.total} عنصر • ${s.remaining} متبقي`;
+    _setTopbarPage(pg);
+  }
+
+  /* ── EXAM VIEW ── */
+  function _renderExamView(pg) {
+    const s=ExamManager.getStats(pg.id);
+    const streak=pg.streak||0;
+    const c=document.getElementById('content');
+    c.innerHTML=`
+    <div class="exam-view">
+      <div class="exam-toolbar">
+        <button class="btn btn-sm btn-primary" onclick="Exams.openAdd('${pg.id}')">+ ${I18n.t('addExam')}</button>
+        <button class="btn btn-sm" onclick="UI.openModal('modalBulkImport')">📥 ${I18n.t('bulkImport')}</button>
+        <div class="drop" id="sessionDrop">
+          <button class="btn btn-sm" onclick="UI.toggleDrop('sessionDrop')">🧠 جلسة</button>
+          <div class="drop-menu" id="sessionDropMenu">
+            <div class="drop-item" onclick="SmartSession.start('${pg.id}','weak');UI.closeAllDrops()">📉 ${I18n.t('weakFirst')}</div>
+            <div class="drop-item" onclick="SmartSession.start('${pg.id}','random');UI.closeAllDrops()">🎲 ${I18n.t('random')}</div>
+            <div class="drop-item" onclick="SmartSession.start('${pg.id}','spaced');UI.closeAllDrops()">🔁 تكرار متباعد</div>
+            <div class="drop-item" onclick="SmartSession.start('${pg.id}','all');UI.closeAllDrops()">📚 جميع المعلق</div>
+          </div>
+        </div>
+        <button class="btn btn-sm" onclick="UI.showExamAnalytics('${pg.id}')">📊 ${I18n.t('analytics')}</button>
+        <div style="margin-right:auto;display:flex;gap:4px">
+          <button class="btn btn-sm btn-icon${_examView==='grid'?' btn-primary':''}" onclick="UI.setExamView('grid','${pg.id}')" title="شبكة">⊞</button>
+          <button class="btn btn-sm btn-icon${_examView==='list'?' btn-primary':''}" onclick="UI.setExamView('list','${pg.id}')" title="قائمة">☰</button>
+        </div>
+      </div>
+      ${streak>0?`<div class="exam-streak-banner"><span class="esb-fire">🔥</span> سلسلة ${streak} ${I18n.t('streak')}</div>`:''}
+      <div class="exam-stats-bar">
+        <div class="esb-item"><div class="esb-dot" style="background:var(--accent)"></div><span class="esb-val">${s.done}</span> مكتمل</div>
+        <div class="esb-item"><div class="esb-dot" style="background:var(--blue)"></div><span class="esb-val">${s.inProg}</span> قيد الدراسة</div>
+        <div class="esb-item"><div class="esb-dot" style="background:var(--border2)"></div><span class="esb-val">${s.total-s.done-s.inProg}</span> لم يبدأ</div>
+        ${s.avg!==null?`<div class="esb-item" style="margin-right:auto"><div class="esb-dot" style="background:var(--amber)"></div><span class="esb-val">${s.avg}%</span> متوسط النتائج</div>`:''}
+      </div>
+      <div class="exam-grid${_examView==='list'?' exam-list-mode':''}" id="examGrid"></div>
+    </div>`;
+    renderExamGrid(pg);
+  }
+
+  function renderExamGrid(pg) {
+    const el=document.getElementById('examGrid'); if(!el) return;
+    const exams=ExamManager.getExams(pg.id);
+    if(!exams.length) {
+      el.innerHTML=`<div class="empty-state" style="width:100%"><div class="empty-icon">📝</div><div class="empty-title">${I18n.t('noExams')}</div><div class="empty-sub">${I18n.t('addFirstExam')}</div><button class="btn btn-primary" style="margin-top:.8rem" onclick="Exams.openAdd('${pg.id}')">+ ${I18n.t('addExam')}</button></div>`;
+      return;
+    }
+    const isList=_examView==='list';
+    let html=exams.map((e,idx)=>{
+      const classes=`exam-card${e.completed?' completed':''}${e.inProgress?' in-progress':''}${e.favorite?' favorite':''}${e.retry?' retry':''}${isList?' view-list':''}`;
+      const scoreClass=e.score!==null?(e.score>=70?'':e.score>=50?' mid':' low'):'';
+      const diff=e.difficulty||'medium';
+      return `<div class="${classes}" data-diff="${diff}" data-eid="${e.id}" data-pgid="${pg.id}"
+        style="animation-delay:${Math.min(idx*.03,.4)}s"
+        onclick="Exams.handleClick('${pg.id}','${e.id}')"
+        oncontextmenu="UI.showExamCtx(event,'${pg.id}','${e.id}');return false"
+        onmousedown="Exams.startLongPress('${pg.id}','${e.id}')"
+        onmouseup="Exams.clearLongPress()"
+        ontouchstart="Exams.startLongPress('${pg.id}','${e.id}')"
+        ontouchend="Exams.clearLongPress()">
+        <div class="ec-num">${e.num}</div>
+        <div class="ec-title">${esc(e.title)}</div>
+        ${e.score!==null?`<div class="ec-score${scoreClass}">${e.score}%</div>`:''}
+        ${isList?`<div class="ec-diff">${diff==='easy'?'سهل':diff==='medium'?'متوسط':'صعب'}</div>`:''}
+        ${isList?`<div class="ec-time">${timeAgo(e.lastOpened)}</div>`:''}
+      </div>`;
+    }).join('');
+    // Add card
+    html+=`<div class="exam-add-card${isList?' view-list':''}" onclick="Exams.openAdd('${pg.id}')">
+      <div class="plus">+</div>
+      <div>${I18n.t('addExam')}</div>
+    </div>`;
+    el.innerHTML=html;
+  }
+
+  function setExamView(v, pgId) {
+    _examView=v;
+    const pg=Pages.getCurrent(); if(pg&&pg.mode==='exam') {
+      document.querySelectorAll('.exam-grid').forEach(g=>{
+        g.classList.toggle('exam-list-mode',v==='list');
+      });
+      renderExamGrid(pg);
+    }
+    document.querySelectorAll('[onclick*="setExamView"]').forEach(b=>{
+      b.classList.toggle('btn-primary',b.getAttribute('onclick').includes(`'${v}'`));
+    });
+  }
+
+  function showExamCtx(e, pgId, eid) {
+    e.preventDefault();
+    closeCtxMenu();
+    const exam=ExamManager.getExams(pgId).find(ex=>ex.id===eid); if(!exam) return;
+    const menu=document.createElement('div');
+    menu.className='ctx-menu'; menu.id='ctxMenuEl';
+    const items=[
+      {icon:'🔗',label:I18n.t('open'),    action:`Exams.handleClick('${pgId}','${eid}')`, cls:'accent'},
+      {icon:'✅',label:exam.completed?'إلغاء الاكتمال':I18n.t('complete'), action:`ExamManager.toggleState('${pgId}','${eid}','complete');UI.renderExamGrid(Pages.getCurrent());UI.closeCtxMenu()`},
+      {icon:'⏳',label:exam.inProgress?'إيقاف الدراسة':I18n.t('inProgress'), action:`ExamManager.toggleState('${pgId}','${eid}','inProgress');UI.renderExamGrid(Pages.getCurrent());UI.closeCtxMenu()`},
+      {icon:'★', label:exam.favorite?'إزالة المفضلة':I18n.t('favorite'), action:`ExamManager.toggleState('${pgId}','${eid}','favorite');UI.renderExamGrid(Pages.getCurrent());UI.closeCtxMenu()`},
+      {icon:'🔄',label:exam.retry?'إلغاء الإعادة':I18n.t('retry'), action:`ExamManager.toggleState('${pgId}','${eid}','retry');UI.renderExamGrid(Pages.getCurrent());UI.closeCtxMenu()`},
+      {icon:'✏️',label:I18n.t('edit'),    action:`Exams.openEdit('${pgId}','${eid}');UI.closeCtxMenu()`},
+      null,
+      {icon:'🗑',label:I18n.t('delete'),  action:`Exams.deleteExam('${pgId}','${eid}')`, cls:'danger'},
+    ];
+    menu.innerHTML=items.map(it=>it===null?'<div class="ctx-separator"></div>':`<div class="ctx-item${it.cls?' '+it.cls:''}" onclick="${it.action}"><span class="ctx-icon">${it.icon}</span>${it.label}</div>`).join('');
+    // position
+    let x=e.clientX, y=e.clientY;
+    document.body.appendChild(menu);
+    const mw=menu.offsetWidth, mh=menu.offsetHeight;
+    if(x+mw>window.innerWidth) x=window.innerWidth-mw-8;
+    if(y+mh>window.innerHeight) y=window.innerHeight-mh-8;
+    menu.style.left=x+'px'; menu.style.top=y+'px';
+    _ctxMenu=menu;
+  }
+
+  function closeCtxMenu() {
+    if(_ctxMenu){ _ctxMenu.remove(); _ctxMenu=null; }
+  }
+
+  function showExamAnalytics(pgId) {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    const exams=ExamManager.getExams(pgId);
+    const s=ExamManager.getStats(pgId);
+    const scored=exams.filter(e=>e.score!==null&&e.completed);
+    const barsHtml=scored.sort((a,b)=>b.score-a.score).slice(0,10).map(e=>{
+      const color=e.score>=70?'var(--accent)':e.score>=50?'var(--amber)':'var(--red)';
+      return `<div class="perf-bar-row">
+        <div class="pb-label">${esc(e.title.slice(0,18))}</div>
+        <div class="pb-bg"><div class="pb-fill" style="width:${e.score}%;background:${color}"></div></div>
+        <div class="pb-val">${e.score}%</div>
+      </div>`;
+    }).join('');
+
+    const heatDays=_buildHeatmap(pg);
+    const c=document.getElementById('content');
+    c.innerHTML=`<div class="analytics-wrap">
+      <div style="display:flex;align-items:center;gap:.7rem;margin-bottom:1.2rem">
+        <button class="btn btn-sm" onclick="UI.openPage('${pgId}')">← رجوع</button>
+        <h2 style="font-family:var(--font-display);font-size:1rem;font-weight:800">تحليلات: ${esc(pg.name)}</h2>
+      </div>
+      <div class="stats-row" style="margin-bottom:1.2rem">
+        <div class="stat-card"><div class="stat-icon">📝</div><div class="stat-val">${s.total}</div><div class="stat-lbl">إجمالي</div></div>
+        <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-val">${s.done}</div><div class="stat-lbl">مكتمل</div></div>
+        <div class="stat-card"><div class="stat-icon">📈</div><div class="stat-val">${s.pct}%</div><div class="stat-lbl">نسبة الإكمال</div></div>
+        ${s.avg!==null?`<div class="stat-card"><div class="stat-icon">🏅</div><div class="stat-val">${s.avg}%</div><div class="stat-lbl">متوسط النتائج</div></div>`:''}
+      </div>
+      ${scored.length>0?`<div class="analytics-section">
+        <h3>أفضل الأداءات</h3>
+        <div class="chart-card"><div class="perf-bars">${barsHtml}</div></div>
+      </div>`:''}
+      <div class="analytics-section">
+        <h3>خريطة النشاط (آخر 7 أسابيع)</h3>
+        <div class="chart-card"><div class="heatmap-grid" id="heatmapGrid">${heatDays}</div></div>
+      </div>
+    </div>`;
+  }
+
+  function _buildHeatmap(pg) {
+    const activity=pg.activity||{};
+    let html='';
+    for(let i=48;i>=0;i--) {
+      const d=new Date(Date.now()-i*86400000);
+      const key=dk(d);
+      const val=activity[key]||0;
+      const lv=val===0?'':val<3?'lv1':val<6?'lv2':val<10?'lv3':'lv4';
+      html+=`<div class="hm-day${lv?' '+lv:''}" title="${key}: ${val}"></div>`;
+    }
+    return html;
+  }
+
+  /* ── STATS VIEW ── */
+  function _renderStats() {
+    const pages=Pages.getAll();
+    let rows='';
+    pages.forEach(pg=>{
+      let s={done:0,total:0,pct:0};
+      if(pg.mode==='task') s=TaskManager.getStats(pg.id);
+      else if(pg.mode==='visual'){const vs=GridManager.getStats(pg);s={done:vs.filled,total:vs.total,pct:vs.pct};}
+      else if(pg.mode==='exam'){const es=ExamManager.getStats(pg.id);s={done:es.done,total:es.total,pct:es.pct};}
+      const sk=Pages.getStreak(pg);
+      rows+=`<div class="page-card" onclick="Pages.tryOpen('${pg.id}')">
+        <div class="pc-mode pc-mode-${pg.mode}">${pg.mode==='task'?'📋':pg.mode==='visual'?'🎨':'📝'} ${pg.mode}</div>
+        <div class="pc-title">${esc(pg.name)}</div>
+        <div class="pc-bar-bg"><div class="pc-bar-fill" style="width:${s.pct}%"></div></div>
+        <div class="pc-bar-label"><span>${s.done}/${s.total}</span><span>${s.pct}%</span></div>
+        ${sk>0?`<div style="font-size:.6rem;color:var(--amber);margin-top:.3rem">🔥 ${sk} يوم</div>`:''}
+      </div>`;
+    });
+    if(!rows) rows=`<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">📊</div><div class="empty-title">لا توجد بيانات</div></div>`;
+    return `<div class="stats-wrap">
+      <h2 style="font-family:var(--font-display);font-size:1rem;font-weight:800;margin-bottom:1rem">الإحصائيات</h2>
+      <div class="pages-grid">${rows}</div>
+    </div>`;
+  }
+
+  /* ── ACHIEVEMENTS ── */
+  function _renderAchievements() {
+    const list=Achievements.getList(), unlocked=Achievements.getUnlocked();
+    const items=list.map(a=>{
+      const u=unlocked[a.id];
+      return `<div class="ach-card${u?' unlocked':' ach-locked'}">
+        <div class="ach-icon">${a.icon}</div>
+        <div class="ach-name">${a.name}</div>
+        <div class="ach-desc">${a.desc}</div>
+        ${u?`<div style="font-size:.58rem;color:var(--accent);margin-top:.3rem">${new Date(u).toLocaleDateString('ar-SA')}</div>`:''}
+      </div>`;
+    }).join('');
+    return `<div class="achievements-wrap">
+      <h2 style="font-family:var(--font-display);font-size:1rem;font-weight:800;margin-bottom:1rem">الإنجازات (${Object.keys(unlocked).length}/${list.length})</h2>
+      <div class="ach-grid">${items}</div>
+    </div>`;
+  }
+
+  /* ── PAGE SETTINGS ── */
+  function openPageSettings() {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    let s='';
+    if(pg.mode==='task') s=TaskManager.getStats(pg.id);
+    else if(pg.mode==='visual') s=GridManager.getStats(pg);
+    else if(pg.mode==='exam') s=ExamManager.getStats(pg.id);
+    document.getElementById('sheetPageName').value=pg.name;
+    document.getElementById('sheetPageStats').textContent=`${s.done||s.filled||s.done||0} / ${s.total} • ${s.pct||0}%`;
+    document.getElementById('sheetPageSettings').classList.add('open');
+  }
+
+  function savePageSettings() {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    const name=document.getElementById('sheetPageName').value.trim();
+    if(name) pg.name=name;
+    UserManager.updateUser({});
+    document.getElementById('sheetPageSettings').classList.remove('open');
+    renderPagesNav(); _setTopbarPage(pg); toast('✅ تم الحفظ');
+  }
+
+  /* ── MODALS / SHEETS / DROPS ── */
+  function openModal(id) {
+    const m=document.getElementById(id); if(!m) return;
+    m.classList.add('open');
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav();
+  }
+  function closeModal(id) { const m=document.getElementById(id); if(m) m.classList.remove('open'); }
+  function toggleDrop(id) {
+    const menu=document.getElementById(id+'Menu'); if(!menu) return;
+    const wasOpen=menu.classList.contains('open');
+    closeAllDrops();
+    if(!wasOpen) menu.classList.add('open');
+  }
+  function closeAllDrops() { document.querySelectorAll('.drop-menu.open').forEach(m=>m.classList.remove('open')); }
+
+  /* ── TOAST ── */
+  function toast(msg) {
+    let t=document.querySelector('.toast');
+    if(t){ t.classList.add('out'); setTimeout(()=>t?.remove(),250); }
+    t=document.createElement('div'); t.className='toast'; t.textContent=msg;
+    document.body.appendChild(t);
+    clearTimeout(_toastTimer);
+    _toastTimer=setTimeout(()=>{ if(t){ t.classList.add('out'); setTimeout(()=>t?.remove(),250); } },2800);
+  }
+
+  return {
+    init, renderPagesNav, showView, openPage, setTopbar,
+    renderTaskContent, renderTaskList, filterTasks, setTaskFilter, toggleTaskSidebar,
+    updateVisualProgress, renderExamGrid, setExamView, showExamCtx, closeCtxMenu, showExamAnalytics,
+    openPageSettings, savePageSettings,
+    openModal, closeModal, toggleDrop, closeAllDrops,
+    toggleTheme, toggleSound, toggleLang, toggleSidebar, toggleMobileSidebar, closeMobileSidebar,
+    toast
+  };
+})();
+
+/* ══════════════════════════════════════════════
+   TASKS (UI glue)
+══════════════════════════════════════════════ */
+const Tasks = (() => {
+  let _pgId=null, _editId=null, _prio='low';
+
+  function openAdd(pgId) {
+    _pgId=pgId; _editId=null; _prio='low';
+    document.getElementById('taskModalTitle').textContent='+ مهمة جديدة';
+    document.getElementById('etName').value='';
+    document.getElementById('etDesc').value='';
+    document.getElementById('etCat').value='';
+    document.getElementById('etDue').value='';
+    document.getElementById('deleteTaskBtn').style.display='none';
+    selectPrio('low');
+    UI.openModal('modalTask');
+  }
+  function openEdit(pgId, tid) {
+    _pgId=pgId; _editId=tid;
+    const tasks=TaskManager.getTasks(pgId);
+    const t=tasks.find(t=>t.id===tid); if(!t) return;
+    document.getElementById('taskModalTitle').textContent='✏️ تعديل المهمة';
+    document.getElementById('etName').value=t.name;
+    document.getElementById('etDesc').value=t.desc||'';
+    document.getElementById('etCat').value=t.category||'';
+    document.getElementById('etDue').value=t.due||'';
+    document.getElementById('deleteTaskBtn').style.display='inline-flex';
+    selectPrio(t.priority||'low');
+    UI.openModal('modalTask');
+  }
+  function selectPrio(p) {
+    _prio=p;
+    ['low','med','high'].forEach(x=>{ const b=document.querySelector(`.prio-btn[data-p="${x}"]`); if(b) b.className=`prio-btn${p===x?' sel-'+x:''}`; });
+  }
+  function saveEdit() {
+    const name=document.getElementById('etName').value.trim(); if(!name){document.getElementById('etName').focus();return;}
+    const data={name,desc:document.getElementById('etDesc').value,priority:_prio,category:document.getElementById('etCat').value,due:document.getElementById('etDue').value};
+    if(_editId) TaskManager.updateTask(_pgId,_editId,data);
+    else TaskManager.addTask(_pgId,data);
+    UI.closeModal('modalTask');
+    const pg=Pages.getCurrent(); if(pg){ UI.renderTaskContent(pg); UI.renderTaskList(pg); }
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.add();
+    UI.toast(_editId?'✅ تم التعديل':'✅ تمت الإضافة');
+    Achievements.check();
+  }
+  function deleteFromModal() {
+    if(!_editId) return;
+    TaskManager.deleteTask(_pgId,_editId);
+    UI.closeModal('modalTask');
+    const pg=Pages.getCurrent(); if(pg){ UI.renderTaskContent(pg); UI.renderTaskList(pg); }
+    UI.toast('🗑 تم الحذف');
+  }
+  function confirmBulkAdd() {
+    const pg=Pages.getCurrent(); if(!pg) return;
+    const lines=document.getElementById('bulkText').value.split('\n').filter(l=>l.trim());
+    TaskManager.bulkAdd(pg.id,lines);
+    UI.closeModal('modalBulkTasks');
+    UI.renderTaskContent(pg); UI.renderTaskList(pg);
+    UI.toast(`✅ أضيف ${lines.length} مهمة`);
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.add();
+    Achievements.check();
+  }
+  function sortBy(by) {
+    const pg=Pages.getCurrent(); if(!pg||pg.mode!=='task') return;
+    const tasks=TaskManager.getTasks(pg.id);
+    if(by==='priority'){const pw={high:0,med:1,low:2};tasks.sort((a,b)=>(pw[a.priority]||2)-(pw[b.priority]||2));}
+    else if(by==='due'){tasks.sort((a,b)=>{if(!a.due&&!b.due)return 0;if(!a.due)return 1;if(!b.due)return -1;return new Date(a.due)-new Date(b.due);});}
+    else if(by==='name'){tasks.sort((a,b)=>a.name.localeCompare(b.name,'ar'));}
+    pg.tasks=tasks; UserManager.updateUser({});
+    UI.renderTaskContent(pg); UI.renderTaskList(pg);
+  }
+  function clearDone(pgId) {
+    const u=UserManager.getCurrent(); const pg=(u?.pages||[]).find(p=>p.id===pgId); if(!pg) return;
+    const before=pg.tasks.length;
+    pg.tasks=pg.tasks.filter(t=>!t.done); UserManager.updateUser({});
+    UI.renderTaskContent(pg); UI.renderTaskList(pg);
+    UI.toast(`🗑 حذف ${before-pg.tasks.length} مهمة مكتملة`);
+  }
+  return { openAdd, openEdit, selectPrio, saveEdit, deleteFromModal, confirmBulkAdd, sortBy, clearDone };
+})();
+
+/* ══════════════════════════════════════════════
+   EXAMS (UI glue)
+══════════════════════════════════════════════ */
+const Exams = (() => {
+  let _pgId=null, _eid=null, _lpTimer=null;
+
+  function openAdd(pgId) {
+    _pgId=pgId; _eid=null;
+    document.getElementById('examModalTitle').textContent='+ '+I18n.t('addExam');
+    document.getElementById('eeTitle').value='';
+    document.getElementById('eeLink').value='';
+    document.getElementById('eeNotes').value='';
+    document.getElementById('eeScore').value='';
+    document.getElementById('eeDiff').value='medium';
+    document.getElementById('deleteExamBtn').style.display='none';
+    UI.openModal('modalExam');
+  }
+  function openEdit(pgId, eid) {
+    _pgId=pgId; _eid=eid;
+    const exams=ExamManager.getExams(pgId);
+    const e=exams.find(e=>e.id===eid); if(!e) return;
+    document.getElementById('examModalTitle').textContent='✏️ '+I18n.t('edit');
+    document.getElementById('eeTitle').value=e.title;
+    document.getElementById('eeLink').value=e.link||'';
+    document.getElementById('eeNotes').value=e.notes||'';
+    document.getElementById('eeScore').value=e.score!==null?e.score:'';
+    document.getElementById('eeDiff').value=e.difficulty||'medium';
+    document.getElementById('deleteExamBtn').style.display='inline-flex';
+    UI.openModal('modalExam');
+  }
+  function saveExam() {
+    const title=document.getElementById('eeTitle').value.trim()||`اختبار`;
+    const link=document.getElementById('eeLink').value.trim();
+    const notes=document.getElementById('eeNotes').value.trim();
+    const scoreRaw=document.getElementById('eeScore').value;
+    const score=scoreRaw!==''?Math.max(0,Math.min(100,parseInt(scoreRaw))):null;
+    const difficulty=document.getElementById('eeDiff').value||'medium';
+    if(_eid) {
+      ExamManager.updateExam(_pgId,_eid,{title,link,notes,score,difficulty});
+    } else {
+      ExamManager.addExam(_pgId,{title,link,notes,score,difficulty});
+    }
+    UI.closeModal('modalExam');
+    const pg=Pages.getCurrent(); if(pg) UI.renderExamGrid(pg);
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.add();
+    UI.toast(_eid?'✅ تم التعديل':'✅ تمت الإضافة');
+    Achievements.check();
+  }
+  function deleteExam(pgId, eid) {
+    ExamManager.deleteExam(pgId,eid);
+    UI.closeCtxMenu();
+    const pg=Pages.getCurrent(); if(pg) UI.renderExamGrid(pg);
+    UI.toast('🗑 تم الحذف');
+  }
+  function deleteFromModal() {
+    if(!_eid) return;
+    ExamManager.deleteExam(_pgId,_eid);
+    UI.closeModal('modalExam');
+    const pg=Pages.getCurrent(); if(pg) UI.renderExamGrid(pg);
+    UI.toast('🗑 تم الحذف');
+  }
+  function confirmBulkImport() {
+    const raw=document.getElementById('bulkImportText').value.trim();
+    if(!raw) return;
+    const pgId=document.getElementById('bulkImportPgId').value;
+    const added=ExamManager.bulkImport(pgId,raw);
+    UI.closeModal('modalBulkImport');
+    const pg=Pages.getCurrent(); if(pg) UI.renderExamGrid(pg);
+    UI.toast(`📥 أضيف ${added} اختبار`);
+    Achievements.check();
+  }
+
+  function handleClick(pgId, eid) {
+    ExamManager.openExam(pgId, eid);
+    const pg=Pages.getCurrent(); if(pg) UI.renderExamGrid(pg);
+    _setTopbarPage(pg);
+  }
+  function _setTopbarPage(pg){ if(pg){ const s=ExamManager.getStats(pg.id); UI.setTopbar(pg.name,`${s.done}/${s.total} • ${s.pct}%`); } }
+
+  function startLongPress(pgId, eid) {
+    _lpTimer=setTimeout(()=>{ clearTimeout(_lpTimer); _lpTimer=null; /* show ctx */ const el=document.querySelector(`[data-eid="${eid}"]`); if(el){const r=el.getBoundingClientRect();UI.showExamCtx({clientX:r.right,clientY:r.top,preventDefault:()=>{}},pgId,eid);} },600);
+  }
+  function clearLongPress() { clearTimeout(_lpTimer); _lpTimer=null; }
+
+  return { openAdd, openEdit, saveExam, deleteExam, deleteFromModal, confirmBulkImport, handleClick, startLongPress, clearLongPress };
+})();
+
+/* ══════════════════════════════════════════════
+   ONBOARDING
+══════════════════════════════════════════════ */
+const Onboarding = (() => {
+  let _mode='task';
+  function check() {
+    const users=UserManager.getUsers();
+    if(!users.length) {
+      document.getElementById('existingUsers').classList.add('hidden');
+      document.getElementById('scrName').classList.remove('hidden');
+      return;
+    }
+    if(!UserManager.getCurrent()) {
+      // show user list
+      const ul=document.getElementById('userList');
+      ul.innerHTML=users.map(u=>`<div class="user-list-item" onclick="Onboarding.login('${u.id}')">
+        <div class="uli-avatar" style="background:${u.color}">${u.avatar}</div>
+        <div><div class="uli-name">${esc(u.name)}</div><div class="uli-meta">${(u.pages||[]).length} مجلد • ${new Date(u.lastActive).toLocaleDateString('ar-SA')}</div></div>
+        <div class="uli-arrow">←</div>
+      </div>`).join('');
+      document.getElementById('existingUsers').classList.remove('hidden');
+      document.getElementById('scrName').classList.remove('hidden');
+    } else {
+      UI.init();
+    }
+  }
+  function login(id) { UserManager.switchUser(id); hide(); UI.init(); }
+  function submitName() {
+    const name=document.getElementById('nameInput').value.trim();
+    if(!name){document.getElementById('nameInput').focus();return;}
+    UserManager.createUser(name);
+    document.getElementById('scrName').classList.add('hidden');
+    document.getElementById('scrMode').classList.remove('hidden');
+    document.getElementById('firstPageName').value='';
+  }
+  function selectMode(mode,el) {
+    _mode=mode;
+    document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('selected'));
+    el.classList.add('selected');
+  }
+  function finishSetup() {
+    const pgName=document.getElementById('firstPageName').value.trim()||(_mode==='task'?'مهامي':_mode==='visual'?'تقدمي البصري':'اختباراتي');
+    const opts=_mode==='visual'?{count:30,shape:'circle'}:{};
+    Pages.create(pgName,_mode,opts);
+    hide(); UI.init();
+  }
+  function hide() { document.getElementById('scrName').classList.add('hidden'); document.getElementById('scrMode').classList.add('hidden'); }
+  return { check, login, submitName, selectMode, finishSetup };
+})();
+
+/* ══════════════════════════════════════════════
+   GLOBAL HANDLERS
+══════════════════════════════════════════════ */
+function selectShape(sh) {
+  const pg=Pages.getCurrent(); if(!pg) return;
+  GridManager.setShape(sh); pg.shape=sh; UserManager.updateUser({});
+  document.getElementById('shapeLabel').textContent={circle:'⬤ دائرة',square:'■ مربع',star:'★ نجمة',hex:'⬡ سداسي'}[sh]||'الشكل';
+  UI.closeAllDrops();
+  const grid=document.getElementById('shapeGrid');
+  if(grid) GridManager.renderGrid(pg,grid);
+  if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav();
 }
 
-/* ============================================================
-   POMODORO
-============================================================ */
-function updatePomoSettings() {
-  const p=AppState.pomodoro; if(p.running) return;
-  p.focusMins=parseInt($id('pomo-focus-input')?.value)||25;
-  p.breakMins=parseInt($id('pomo-break-input')?.value)||5;
-  p.totalSessions=parseInt($id('pomo-sessions-input')?.value)||4;
-  p.remaining=p.focusMins*60; p.phase='focus'; updatePomoDisplay();
-}
-function togglePomodoro() {
-  const p=AppState.pomodoro;
-  if(p.running){ clearInterval(p.interval); p.running=false; setText('pomo-start-btn','▶ ابدأ'); setText('pomo-status-text','متوقف مؤقتاً'); }
-  else{ p.running=true; setText('pomo-start-btn','⏸ إيقاف'); p.interval=setInterval(tickPomo,1000); }
-}
-function tickPomo() {
-  const p=AppState.pomodoro; p.remaining--;
-  if(p.remaining<=0) {
-    if(p.phase==='focus'){ p.completedSessions++; p.phase='break'; p.remaining=p.breakMins*60; showToast('🍅 وقت الاستراحة!','info'); }
-    else{ p.phase='focus'; p.remaining=p.focusMins*60; p.currentSession=Math.min(p.currentSession+1,p.totalSessions); if(p.completedSessions>=p.totalSessions){ showToast('🏆 انتهت جميع الجلسات! أحسنت','success'); resetPomodoro(); return; } showToast('✏️ وقت التركيز!','info'); }
-  }
-  updatePomoDisplay();
-}
-function skipPomoPhase(){ AppState.pomodoro.remaining=0; tickPomo(); }
-function resetPomodoro() {
-  const p=AppState.pomodoro; clearInterval(p.interval); p.running=false; p.phase='focus';
-  p.currentSession=1; p.completedSessions=0; p.remaining=p.focusMins*60;
-  setText('pomo-start-btn','▶ ابدأ'); updatePomoDisplay();
-}
-function updatePomoDisplay() {
-  const p=AppState.pomodoro; const f=p.phase==='focus';
-  const total=(f?p.focusMins:p.breakMins)*60, off=188.5-(188.5*p.remaining/total);
-  setText('pomo-display',fmtTime(p.remaining));
-  const de=$id('pomo-display'); if(de) de.className='pomo-time '+(f?'focus':'break');
-  const le=$id('pomo-label'); if(le){ le.textContent=f?'تركيز':'استراحة'; le.className='pomo-label '+(f?'focus':'break'); }
-  const re=$id('pomo-ring-fill'); if(re){ re.style.strokeDashoffset=off; re.className='pomo-ring-fill '+(f?'focus-ring':'break-ring'); }
-  setText('pomo-sessions-inner',p.currentSession+'/'+p.totalSessions);
-  setText('pomo-status-text',p.running?(f?'⏳ جلسة تركيز جارية...':'☕ استرح قليلاً...'):'ابدأ جلسة دراسة منتجة');
-  let dots=''; for(let i=0;i<p.totalSessions;i++) dots+=`<div class="pomo-dot ${i<p.completedSessions?'done':''}"></div>`;
-  const de2=$id('pomo-dots'); if(de2) de2.innerHTML=dots;
+function selectColor(ci) {
+  GridManager.setColor(ci);
+  document.querySelectorAll('.color-sw').forEach(sw=>sw.classList.toggle('sel',parseInt(sw.dataset.ci)===ci));
+  UI.closeAllDrops();
 }
 
-/* ============================================================
-   TOOLS
-============================================================ */
-function initToolsPage() {
-  const tg=JSON.parse(localStorage.getItem('toolGoal')||'null');
-  if(tg){ setVal('tool-goal-name',tg.name||''); setVal('tool-goal-target',tg.target||20); setVal('tool-goal-done',tg.done||0); updateToolGoal(); }
-  updateCdDisplay(); updateQtDisplay();
+function _toggleNumsUI(pg) {
+  if(!pg) return;
+  const on=GridManager.toggleNums(pg);
+  const lbl=document.getElementById('numsToggleLabel'); if(lbl) lbl.textContent=on?'إخفاء الترقيم':'تفعيل الترقيم';
+  if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav();
 }
-function toggleCountdown() {
-  const cd=AppState.tools.cd;
-  if(cd.running){ clearInterval(cd.interval); cd.running=false; setText('cd-start-btn','▶ ابدأ'); setText('cd-label','متوقف'); }
-  else {
-    if(!cd.remaining){ const m=parseInt($id('cd-mins')?.value)||0,s=parseInt($id('cd-secs')?.value)||0; cd.total=cd.remaining=m*60+s; if(!cd.remaining){ showToast('حدد وقتاً أولاً','error'); return; } }
-    cd.running=true; setText('cd-start-btn','⏸ إيقاف'); setText('cd-label','يعدّ...');
-    cd.interval=setInterval(()=>{ cd.remaining--; updateCdDisplay(); if(cd.remaining<=0){ clearInterval(cd.interval); cd.running=false; setText('cd-start-btn','▶ ابدأ'); setText('cd-label','✅ انتهى الوقت!'); showToast('⏰ انتهى الوقت!','info'); } },1000);
+
+function _toggleTaskItem(pageId, taskId) {
+  const done=TaskManager.toggleTask(pageId,taskId);
+  if(done){
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.taskDone();
+    confetti(); Achievements.check();
+    Goals.checkProgress(Pages.getCurrent());
+  } else {
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.unfill();
   }
+  const pg=Pages.getCurrent();
+  if(pg){ UI.renderTaskContent(pg); UI.renderTaskList(pg); }
 }
-function updateCdDisplay(){ const r=AppState.tools.cd.remaining,e=$id('cd-display'); if(!e) return; e.textContent=fmtTime(r); e.className='tool-timer-val'+(r<=10&&r>0?' danger':r<=30?' warning':AppState.tools.cd.running?' running':''); }
-function resetCountdown(){ const cd=AppState.tools.cd; clearInterval(cd.interval); cd.running=false; cd.remaining=0; setText('cd-start-btn','▶ ابدأ'); setText('cd-label','جاهز للبدء'); updateCdDisplay(); }
-function toggleStopwatch() {
-  const sw=AppState.tools.sw;
-  if(sw.running){ clearInterval(sw.interval); sw.running=false; setText('sw-start-btn','▶ ابدأ'); setText('sw-label','متوقفة'); const lb=$id('sw-lap-btn'); if(lb) lb.disabled=true; }
-  else{ sw.running=true; setText('sw-start-btn','⏸ إيقاف'); setText('sw-label','تعمل...'); const lb=$id('sw-lap-btn'); if(lb) lb.disabled=false; sw.interval=setInterval(()=>{ sw.elapsed++; setText('sw-display',fmtTime(sw.elapsed)); },1000); }
+
+function _openAddCells() {
+  const pg=Pages.getCurrent(); if(!pg) return;
+  const n=parseInt(prompt('عدد العناصر المراد إضافتها:','10')||'0');
+  if(n>0) GridManager.addCells(pg,n);
 }
-function lapStopwatch(){ const sw=AppState.tools.sw,le=$id('sw-laps'); if(!le) return; sw.laps.push(sw.elapsed); const d=document.createElement('div'); d.style.cssText='background:var(--surface2);border-radius:6px;padding:4px 10px;font-size:0.78rem;color:var(--text3);display:flex;justify-content:space-between'; d.innerHTML=`<span>لفة ${sw.laps.length}</span><span style="color:var(--accent);font-weight:700">${fmtTime(sw.elapsed)}</span>`; le.appendChild(d); le.scrollTop=le.scrollHeight; }
-function resetStopwatch(){ const sw=AppState.tools.sw; clearInterval(sw.interval); sw.running=false; sw.elapsed=0; sw.laps=[]; setText('sw-display','00:00'); setText('sw-start-btn','▶ ابدأ'); setText('sw-label','متوقفة'); const lb=$id('sw-lap-btn'); if(lb) lb.disabled=true; const le=$id('sw-laps'); if(le) le.innerHTML=''; }
-function updateToolGoal(){ const t=parseInt($id('tool-goal-target')?.value)||1,d=parseInt($id('tool-goal-done')?.value)||0,p=Math.min(100,Math.round(d/t*100)); setText('tool-goal-pct',p+'%'); setText('tool-goal-sub',`${d} من ${t}`); const b=$id('tool-goal-bar'); if(b) b.style.width=p+'%'; const pe=$id('tool-goal-pct'); if(pe) pe.style.color=p>=100?'var(--green)':p>=60?'var(--accent)':'var(--blue)'; }
-function incrementGoalDone(){ const i=$id('tool-goal-done'); if(i){ i.value=(parseInt(i.value)||0)+1; updateToolGoal(); } }
-function saveToolGoal(){ localStorage.setItem('toolGoal',JSON.stringify({name:$id('tool-goal-name')?.value.trim(),target:parseInt($id('tool-goal-target')?.value)||20,done:parseInt($id('tool-goal-done')?.value)||0})); showToast('تم حفظ الهدف ✓'); }
-function toggleQTimer() {
-  const qt=AppState.tools.qt;
-  if(qt.running){ clearInterval(qt.interval); qt.running=false; setText('qt-start-btn','▶ ابدأ'); const nb=$id('qt-next-btn'); if(nb) nb.disabled=true; }
-  else{ if(!qt.qIdx){ qt.perQ=parseInt($id('qt-secs')?.value)||30; qt.total=parseInt($id('qt-count')?.value)||10; qt.qIdx=1; qt.remaining=qt.perQ; } qt.running=true; setText('qt-start-btn','⏸ إيقاف'); const nb=$id('qt-next-btn'); if(nb) nb.disabled=false; qt.interval=setInterval(()=>{ qt.remaining--; updateQtDisplay(); if(qt.remaining<=0) nextQTimer(); },1000); }
+
+function cdPreset(h,m,s) { Countdown.cdPreset(h,m,s); }
+
+/* ══ EVENT DELEGATION ══ */
+document.addEventListener('click', e => {
+  // Ripple
+  const btn=e.target.closest('.btn,.nav-item,.page-card');
+  if(btn&&!btn.classList.contains('no-ripple')){
+    const r=document.createElement('span'); r.className='rpl';
+    const rect=btn.getBoundingClientRect();
+    const sz=Math.max(rect.width,rect.height);
+    r.style.cssText=`width:${sz}px;height:${sz}px;left:${e.clientX-rect.left-sz/2}px;top:${e.clientY-rect.top-sz/2}px;`;
+    btn.appendChild(r); setTimeout(()=>r.remove(),500);
+  }
+  // Close drops & ctx
+  if(!e.target.closest('.drop')) UI.closeAllDrops();
+  if(!e.target.closest('.ctx-menu')) UI.closeCtxMenu();
+});
+
+document.addEventListener('keydown', e => {
+  if(e.key==='Escape'){
+    document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));
+    document.querySelectorAll('.sheet-overlay.open').forEach(m=>m.classList.remove('open'));
+    UI.closeAllDrops(); UI.closeCtxMenu(); closeCelebration();
+    SmartSession.close();
+  }
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();GridManager.undo();}
+  if((e.ctrlKey||e.metaKey)&&e.key==='y'){e.preventDefault();GridManager.redo();}
+});
+
+document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('open');}));
+document.querySelectorAll('.sheet-overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('open');}));
+
+document.getElementById('nameInput')?.addEventListener('keydown',e=>{if(e.key==='Enter')Onboarding.submitName();});
+
+/* open bulk import: inject page id */
+function openBulkImport(pgId) {
+  document.getElementById('bulkImportPgId').value=pgId||Pages.getCurrent()?.id||'';
+  document.getElementById('bulkImportText').value='';
+  UI.openModal('modalBulkImport');
 }
-function nextQTimer(){ const qt=AppState.tools.qt; qt.qIdx++; if(qt.qIdx>qt.total){ clearInterval(qt.interval); qt.running=false; qt.qIdx=0; setText('qt-start-btn','▶ ابدأ'); const nb=$id('qt-next-btn'); if(nb) nb.disabled=true; setText('qt-label','✅ انتهت الأسئلة!'); showToast('✅ انتهت جميع الأسئلة!','success'); return; } qt.remaining=qt.perQ; showToast(`➡️ السؤال ${qt.qIdx}`,'info'); updateQtDisplay(); }
-function updateQtDisplay(){ const qt=AppState.tools.qt,r=qt.remaining,t=qt.perQ||1,p=Math.max(0,r/t*100),e=$id('qt-display'); if(e){ e.textContent=fmtTime(r); e.className='tool-timer-val'+(r<=5?' danger':r<=10?' warning':''); } setText('qt-label',qt.qIdx?`سؤال ${qt.qIdx} / ${qt.total}`:'جاهز'); const b=$id('qt-bar'); if(b) b.style.width=p+'%'; }
-function resetQTimer(){ const qt=AppState.tools.qt; clearInterval(qt.interval); qt.running=false; qt.qIdx=0; qt.remaining=0; setText('qt-start-btn','▶ ابدأ'); const nb=$id('qt-next-btn'); if(nb) nb.disabled=true; updateQtDisplay(); }
+
+/* ══ BOOT ══ */
+window.addEventListener('DOMContentLoaded', () => { Onboarding.check(); });
