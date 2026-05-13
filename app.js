@@ -356,8 +356,10 @@ const GridManager = (() => {
     else el.className=`si si-${shape}`;
     el.style.opacity='0';
     el.style.animation=`fadeIn .3s ${Math.min(i*2,500)}ms ease forwards`;
-    if(pg.numSize) el.style.setProperty('--num-size',pg.numSize+'px');
-    const nl=document.createElement('span'); nl.className='shape-nl'; nl.textContent=i+1; el.appendChild(nl);
+    const nl=document.createElement('span');
+    nl.className='shape-nl';
+    nl.textContent=i+1;
+    el.appendChild(nl);
     el.addEventListener('click',()=>{ toggleCell(pg,i,el); _updateProgress(pg); });
     return el;
   }
@@ -412,11 +414,17 @@ const GridManager = (() => {
   }
 
   function toggleNums(pg) {
-    if(!pg) return; pg.showNums=!pg.showNums; UserManager.updateUser({});
+    if(!pg) return;
+    pg.showNums=!pg.showNums;
+    UserManager.updateUser({});
     const g=document.getElementById('shapeGrid');
     if(g) g.classList.toggle('nums-on',pg.showNums);
+    _applyNumVars(pg);
     return pg.showNums;
   }
+
+  /* Live-update num vars without full re-render */
+  function applyNumVars(pg) { _applyNumVars(pg); }
 
   function confirmBulkFill() {
     const n=parseInt(document.getElementById('bulkFillCount').value)||0; if(n<1) return;
@@ -439,7 +447,241 @@ const GridManager = (() => {
     Goals.checkProgress(pg); _checkAllFilled(pg);
   }
 
-  return { getColors, getCells, toggleCell, renderGrid, getStats, resetCells, addCells, setShape, setSize, setColor, toggleNums, confirmBulkFill, undo, redo };
+  return { getColors, getCells, toggleCell, renderGrid, getStats, resetCells, addCells, setShape, setSize, setColor, toggleNums, applyNumVars, confirmBulkFill, undo, redo };
+})();
+
+/* ══════════════════════════════════════════════
+   NUMBER CONTROLS — size, color, weight of shape labels
+══════════════════════════════════════════════ */
+const NumberControls = (() => {
+  /* Preset color catalog for the number labels */
+  const EMPTY_PRESETS = [
+    { label:'أبيض',       val:'rgba(255,255,255,.85)', cls:'white'  },
+    { label:'فاتح',       val:'rgba(255,255,255,.50)', cls:'light'  },
+    { label:'رمادي',      val:'rgba(200,210,230,.65)', cls:''       , bg:'rgba(200,210,230,.65)' },
+    { label:'أزرق',       val:'#3d8ef0',               cls:''       , bg:'#3d8ef0'  },
+    { label:'أخضر',       val:'#20d6a8',               cls:''       , bg:'#20d6a8'  },
+    { label:'بنفسجي',    val:'#8b5cf6',               cls:''       , bg:'#8b5cf6'  },
+    { label:'برتقالي',   val:'#f97316',               cls:''       , bg:'#f97316'  },
+    { label:'أصفر',       val:'#eab308',               cls:''       , bg:'#eab308'  },
+    { label:'وردي',       val:'#e879a0',               cls:''       , bg:'#e879a0'  },
+  ];
+  const FILL_PRESETS = [
+    { label:'أسود',       val:'rgba(0,0,0,.45)',       cls:'dark'   },
+    { label:'داكن',       val:'rgba(0,0,0,.22)',       cls:'black'  },
+    { label:'أبيض',       val:'rgba(255,255,255,.80)', cls:'white'  },
+    { label:'شفاف',       val:'transparent',           cls:''       , bg:'rgba(255,255,255,.08)', dashed:true },
+    { label:'أزرق',       val:'#1e3a5f',               cls:''       , bg:'#1e3a5f'  },
+    { label:'أخضر',       val:'#0d4a35',               cls:''       , bg:'#0d4a35'  },
+    { label:'بنفسجي',    val:'#2d1b69',               cls:''       , bg:'#2d1b69'  },
+  ];
+
+  /* Current live state (not persisted between sessions — pg saves it) */
+  let _selEmptyIdx = 0;
+  let _selFillIdx  = 0;
+  let _selWeight   = '700';
+
+  /* ─────────────────────────────────────────
+     open() — build and show the panel menu
+  ───────────────────────────────────────── */
+  function open() {
+    const pg = Pages.getCurrent();
+    if (!pg || pg.mode !== 'visual') return;
+
+    // Sync local state from page
+    _selWeight = pg.numWeight || '700';
+    const curEmpty = pg.numColor || EMPTY_PRESETS[0].val;
+    const curFill  = pg.numColorFill || FILL_PRESETS[0].val;
+    _selEmptyIdx = EMPTY_PRESETS.findIndex(p=>p.val===curEmpty);
+    if(_selEmptyIdx<0) _selEmptyIdx=0;
+    _selFillIdx = FILL_PRESETS.findIndex(p=>p.val===curFill);
+    if(_selFillIdx<0) _selFillIdx=0;
+
+    const menu = document.getElementById('numPanelMenu');
+    if (!menu) return;
+    menu.innerHTML = _buildHTML(pg);
+    menu.classList.add('open');
+
+    // Live slider
+    const slider = menu.querySelector('#npmSizeSlider');
+    if (slider) {
+      slider.addEventListener('input', () => {
+        const v = parseInt(slider.value);
+        menu.querySelector('#npmSizeVal').textContent = v + 'px';
+        _liveApply(pg, { numSize: v });
+        _updatePreview(menu, pg);
+      });
+    }
+  }
+
+  function close() {
+    document.getElementById('numPanelMenu')?.classList.remove('open');
+  }
+  function toggle() {
+    const m = document.getElementById('numPanelMenu');
+    if (m?.classList.contains('open')) close(); else open();
+  }
+
+  /* ─────────────────────────────────────────
+     _buildHTML — full panel inner HTML
+  ───────────────────────────────────────── */
+  function _buildHTML(pg) {
+    const sz = pg.numSize || 12;
+    const shown = !!pg.showNums;
+
+    const emptySwatches = EMPTY_PRESETS.map((p,i)=>{
+      const bg = p.bg || p.val;
+      const border = i===_selEmptyIdx ? 'border:2px solid var(--text)' : 'border:2px solid transparent';
+      return `<div class="npm-col-sw" style="background:${bg};${border}" data-ei="${i}" onclick="NumberControls._pickEmpty(${i})" title="${p.label}"></div>`;
+    }).join('');
+
+    const fillSwatches = FILL_PRESETS.map((p,i)=>{
+      const bg = p.bg || p.val;
+      const dash = p.dashed ? 'border:2px dashed rgba(255,255,255,.3)!important' : '';
+      const border = i===_selFillIdx ? 'outline:2px solid var(--text);outline-offset:1px' : '';
+      return `<div class="npm-col-sw" style="background:${bg};${dash};${border}" data-fi="${i}" onclick="NumberControls._pickFill(${i})" title="${p.label}"></div>`;
+    }).join('');
+
+    const weights = [
+      {v:'400', lbl:'عادي'},
+      {v:'700', lbl:'عريض'},
+      {v:'900', lbl:'أثقل'},
+    ];
+    const wBtns = weights.map(w=>
+      `<div class="npm-wt${_selWeight===w.v?' sel':''}" data-wt="${w.v}" onclick="NumberControls._pickWeight('${w.v}')">${w.lbl}</div>`
+    ).join('');
+
+    return `
+      <div class="npm-title">🔢 إعدادات الأرقام</div>
+
+      <!-- Visibility -->
+      <div class="npm-row" style="margin-bottom:.55rem">
+        <div class="npm-row-label">إظهار</div>
+        <div style="display:flex;gap:5px;flex:1">
+          <div class="npm-wt${shown?' sel':''}" onclick="NumberControls._toggleVis()" id="npmVisBtn" style="flex:1">${shown?'✅ مُظهَر':'👁 إظهار'}</div>
+        </div>
+      </div>
+
+      <!-- Size slider -->
+      <div class="npm-row">
+        <div class="npm-row-label">الحجم</div>
+        <input type="range" class="npm-slider" id="npmSizeSlider" min="8" max="38" value="${sz}">
+        <div class="npm-slider-val" id="npmSizeVal">${sz}px</div>
+      </div>
+
+      <!-- Preview -->
+      <div class="npm-preview" id="npmPreview">
+        <div class="npm-prev-circle" id="npmPrevEmpty" style="background:var(--card2);border:2px solid var(--border2)">
+          <span class="npm-prev-label" id="npmPrevEmptyLbl" style="font-size:${sz}px;color:${pg.numColor||EMPTY_PRESETS[0].val};font-weight:${_selWeight}">7</span>
+        </div>
+        <div style="font-size:.6rem;color:var(--muted);line-height:1.4;text-align:center">فارغ<br>◄</div>
+        <div class="npm-prev-circle" id="npmPrevFill" style="background:var(--c1)">
+          <span class="npm-prev-label" id="npmPrevFillLbl" style="font-size:${sz}px;color:${pg.numColorFill||FILL_PRESETS[0].val};font-weight:${_selWeight}">7</span>
+        </div>
+        <div style="font-size:.6rem;color:var(--muted);line-height:1.4;text-align:center">ملوّن<br>◄</div>
+      </div>
+
+      <!-- Empty color -->
+      <div class="npm-col-label">🔲 لون الرقم على الفارغ</div>
+      <div class="npm-col-row" id="npmEmptySwatches" style="margin-bottom:.6rem">${emptySwatches}</div>
+
+      <!-- Fill color -->
+      <div class="npm-col-label">🟩 لون الرقم على الملوّن</div>
+      <div class="npm-col-row" id="npmFillSwatches" style="margin-bottom:.6rem">${fillSwatches}</div>
+
+      <!-- Weight -->
+      <div class="npm-col-label">وزن الخط</div>
+      <div class="npm-weight-row" style="margin-bottom:.7rem">${wBtns}</div>
+
+      <!-- Apply -->
+      <button class="npm-apply-btn" onclick="NumberControls.apply()">✅ تطبيق</button>
+    `;
+  }
+
+  /* ─────────────────────────────────────────
+     Pickers — called from inline onclick
+  ───────────────────────────────────────── */
+  function _pickEmpty(i) {
+    _selEmptyIdx = i;
+    const pg = Pages.getCurrent(); if(!pg) return;
+    // Update swatch borders
+    document.querySelectorAll('#npmEmptySwatches .npm-col-sw').forEach((sw,idx)=>{
+      sw.style.border = idx===i ? '2px solid var(--text)' : '2px solid transparent';
+    });
+    // Live preview
+    const lbl = document.getElementById('npmPrevEmptyLbl');
+    if(lbl) lbl.style.color = EMPTY_PRESETS[i].val;
+    _liveApply(pg, { numColor: EMPTY_PRESETS[i].val });
+  }
+
+  function _pickFill(i) {
+    _selFillIdx = i;
+    const pg = Pages.getCurrent(); if(!pg) return;
+    document.querySelectorAll('#npmFillSwatches .npm-col-sw').forEach((sw,idx)=>{
+      sw.style.outline = idx===i ? '2px solid var(--text)' : 'none';
+    });
+    const lbl = document.getElementById('npmPrevFillLbl');
+    if(lbl) lbl.style.color = FILL_PRESETS[i].val;
+    _liveApply(pg, { numColorFill: FILL_PRESETS[i].val });
+  }
+
+  function _pickWeight(w) {
+    _selWeight = w;
+    const pg = Pages.getCurrent(); if(!pg) return;
+    document.querySelectorAll('.npm-wt[data-wt]').forEach(b=>b.classList.toggle('sel', b.dataset.wt===w));
+    [document.getElementById('npmPrevEmptyLbl'), document.getElementById('npmPrevFillLbl')].forEach(el=>{ if(el) el.style.fontWeight=w; });
+    _liveApply(pg, { numWeight: w });
+  }
+
+  function _toggleVis() {
+    const pg = Pages.getCurrent(); if(!pg) return;
+    const newVal = !pg.showNums;
+    pg.showNums = newVal;
+    UserManager.updateUser({});
+    const g = document.getElementById('shapeGrid');
+    if(g) g.classList.toggle('nums-on', newVal);
+    GridManager.applyNumVars(pg);
+    const btn = document.getElementById('npmVisBtn');
+    if(btn) btn.textContent = newVal ? '✅ مُظهَر' : '👁 إظهار';
+    if(btn) btn.classList.toggle('sel', newVal);
+    // sync topbar toggle label
+    const topLbl = document.getElementById('numsToggleLabel');
+    if(topLbl) topLbl.textContent = newVal ? 'إخفاء الأرقام' : '🔢 الأرقام';
+  }
+
+  /* Live apply CSS vars without saving */
+  function _liveApply(pg, patch) {
+    Object.assign(pg, patch);
+    GridManager.applyNumVars(pg);
+  }
+
+  function _updatePreview(menu, pg) {
+    const sz = parseInt(menu.querySelector('#npmSizeSlider')?.value) || pg.numSize || 12;
+    [document.getElementById('npmPrevEmptyLbl'), document.getElementById('npmPrevFillLbl')].forEach(el=>{
+      if(el) el.style.fontSize = sz+'px';
+    });
+  }
+
+  /* ─────────────────────────────────────────
+     apply() — save all settings to page + persist
+  ───────────────────────────────────────── */
+  function apply() {
+    const pg = Pages.getCurrent(); if(!pg) return;
+    const slider = document.getElementById('npmSizeSlider');
+    if(slider) pg.numSize = parseInt(slider.value)||12;
+    pg.numColor     = EMPTY_PRESETS[_selEmptyIdx].val;
+    pg.numColorFill = FILL_PRESETS[_selFillIdx].val;
+    pg.numWeight    = _selWeight;
+    UserManager.updateUser({});
+    GridManager.applyNumVars(pg);
+    const g = document.getElementById('shapeGrid');
+    if(g) g.classList.toggle('nums-on', !!pg.showNums);
+    close();
+    if(UserManager.getSetting('soundEnabled',true)) SoundEngine.success();
+    UI.toast(`✅ تم تطبيق إعدادات الأرقام`);
+  }
+
+  return { open, close, toggle, apply, _pickEmpty, _pickFill, _pickWeight, _toggleVis };
 })();
 
 /* ══════════════════════════════════════════════
@@ -1270,10 +1512,13 @@ const UI = (() => {
     const s=GridManager.getStats(pg);
     const COLORS=GridManager.getColors();
     const colorSwatches=COLORS.map((c,i)=>`<div class="color-sw" data-ci="${i+1}" style="background:${c}" onclick="selectColor(${i+1})" title="${c}"></div>`).join('');
+    const numsOn=!!pg.showNums;
     const c=document.getElementById('content');
     c.innerHTML=`
     <div class="visual-view">
       <div class="visual-toolbar">
+
+        <!-- Shape picker -->
         <div class="drop" id="shapeDrop">
           <button class="btn btn-sm" id="shapeLabel" onclick="UI.toggleDrop('shapeDrop')">⬤ الشكل</button>
           <div class="drop-menu" id="shapeDropMenu">
@@ -1283,24 +1528,51 @@ const UI = (() => {
             <div class="shp-opt-card drop-item" onclick="selectShape('hex');UI.closeAllDrops()">⬡ سداسي</div>
           </div>
         </div>
+
+        <!-- Fill color picker -->
         <div class="drop" id="colorDrop">
-          <button class="btn btn-sm" onclick="UI.toggleDrop('colorDrop')"><span id="colorPrevDot" style="width:10px;height:10px;border-radius:50%;background:var(--c1);display:inline-block"></span> اللون</button>
-          <div class="drop-menu" id="colorDropMenu" style="min-width:180px">
-            <div style="padding:.3rem .4rem"><div class="color-row">${colorSwatches}</div></div>
+          <button class="btn btn-sm" onclick="UI.toggleDrop('colorDrop')">
+            <span id="colorPrevDot" style="width:10px;height:10px;border-radius:50%;background:var(--c1);display:inline-block;vertical-align:middle"></span>
+            <span style="margin-right:3px">اللون</span>
+          </button>
+          <div class="drop-menu" id="colorDropMenu" style="min-width:190px">
+            <div style="padding:.4rem .5rem"><div class="color-row">${colorSwatches}</div></div>
           </div>
         </div>
-        <div style="display:flex;gap:3px">
-          <button class="size-pill" onclick="GridManager.setSize(32,this)">XS</button>
+
+        <!-- Grid size pills -->
+        <div style="display:flex;gap:3px;align-items:center">
+          <button class="size-pill" onclick="GridManager.setSize(28,this)">XS</button>
           <button class="size-pill sel" onclick="GridManager.setSize(44,this)">S</button>
-          <button class="size-pill" onclick="GridManager.setSize(56,this)">M</button>
-          <button class="size-pill" onclick="GridManager.setSize(72,this)">L</button>
+          <button class="size-pill" onclick="GridManager.setSize(58,this)">M</button>
+          <button class="size-pill" onclick="GridManager.setSize(76,this)">L</button>
         </div>
-        <button class="btn btn-sm" onclick="_toggleNumsUI(Pages.getCurrent())" id="numsToggleLabel">تفعيل الترقيم</button>
-        <button class="btn btn-sm" onclick="GridManager.undo()">↩</button>
-        <button class="btn btn-sm" onclick="GridManager.redo()">↪</button>
-        <button class="btn btn-sm" onclick="document.getElementById('bulkFillCount').value=10;UI.openModal('modalBulkFill')">⚡ تلوين سريع</button>
-        <button class="btn btn-sm" onclick="_openAddCells()">+ عناصر</button>
+
+        <!-- ★ Number Controls dropdown -->
+        <div class="num-panel drop" id="numPanel">
+          <button class="btn btn-sm${numsOn?' btn-primary':''}"
+            id="numsToggleLabel"
+            onclick="NumberControls.toggle();UI.closeAllDrops()">
+            🔢 الأرقام${numsOn?' ✅':''}
+          </button>
+          <div class="num-panel-menu drop-menu" id="numPanelMenu">
+            <!-- filled dynamically by NumberControls.open() -->
+          </div>
+        </div>
+
+        <!-- Undo / Redo -->
+        <button class="btn btn-sm btn-icon" onclick="GridManager.undo()" title="تراجع">↩</button>
+        <button class="btn btn-sm btn-icon" onclick="GridManager.redo()" title="إعادة">↪</button>
+
+        <!-- Quick fill -->
+        <button class="btn btn-sm" onclick="document.getElementById('bulkFillCount').value=10;UI.openModal('modalBulkFill')">⚡ سريع</button>
+
+        <!-- Add cells -->
+        <button class="btn btn-sm" onclick="_openAddCells()">＋ عناصر</button>
+
       </div>
+
+      <!-- Progress hero bar -->
       <div class="progress-hero">
         <div class="ph-row">
           <div class="ph-pct" id="phPct">${s.pct}%</div>
@@ -1311,8 +1583,12 @@ const UI = (() => {
           </div>
         </div>
       </div>
-      <div class="shape-grid" id="shapeGrid"></div>
+
+      <!-- Shape grid -->
+      <div class="shape-grid${numsOn?' nums-on':''}" id="shapeGrid"></div>
     </div>
+
+    <!-- Undo floating bar -->
     <div class="undo-bar" id="undoBar">
       <span id="undoMsg">تم التغيير</span>
       <button class="btn btn-sm btn-primary" onclick="GridManager.undo()">↩ تراجع</button>
@@ -1573,7 +1849,11 @@ const UI = (() => {
     closeAllDrops();
     if(!wasOpen) menu.classList.add('open');
   }
-  function closeAllDrops() { document.querySelectorAll('.drop-menu.open').forEach(m=>m.classList.remove('open')); }
+  function closeAllDrops() {
+    document.querySelectorAll('.drop-menu.open').forEach(m=>m.classList.remove('open'));
+    // Also close number panel
+    document.getElementById('numPanelMenu')?.classList.remove('open');
+  }
 
   /* ── TOAST ── */
   function toast(msg) {
@@ -1835,9 +2115,7 @@ function selectColor(ci) {
 
 function _toggleNumsUI(pg) {
   if(!pg) return;
-  const on=GridManager.toggleNums(pg);
-  const lbl=document.getElementById('numsToggleLabel'); if(lbl) lbl.textContent=on?'إخفاء الترقيم':'تفعيل الترقيم';
-  if(UserManager.getSetting('soundEnabled',true)) SoundEngine.nav();
+  NumberControls._toggleVis();
 }
 
 function _toggleTaskItem(pageId, taskId) {
@@ -1863,7 +2141,7 @@ function cdPreset(h,m,s) { Countdown.cdPreset(h,m,s); }
 
 /* ══ EVENT DELEGATION ══ */
 document.addEventListener('click', e => {
-  // Ripple
+  // Ripple effect
   const btn=e.target.closest('.btn,.nav-item,.page-card');
   if(btn&&!btn.classList.contains('no-ripple')){
     const r=document.createElement('span'); r.className='rpl';
@@ -1872,9 +2150,13 @@ document.addEventListener('click', e => {
     r.style.cssText=`width:${sz}px;height:${sz}px;left:${e.clientX-rect.left-sz/2}px;top:${e.clientY-rect.top-sz/2}px;`;
     btn.appendChild(r); setTimeout(()=>r.remove(),500);
   }
-  // Close drops & ctx
+  // Close dropdowns & context menu on outside click
   if(!e.target.closest('.drop')) UI.closeAllDrops();
   if(!e.target.closest('.ctx-menu')) UI.closeCtxMenu();
+  // Close num panel on outside click
+  if(!e.target.closest('.num-panel')) {
+    document.getElementById('numPanelMenu')?.classList.remove('open');
+  }
 });
 
 document.addEventListener('keydown', e => {

@@ -1448,4 +1448,16 @@ select.inp { cursor: pointer; -webkit-appearance: none; appearance: none; }
   .exam-grid { gap: .5rem; padding: .75rem; }
   .exam-card { width: 95px; height: 95px; }
   .exam-add-card { width: 95px; height: 95px; }
+  /* Number panel: full-width popup on mobile */
+  .num-panel-menu {
+    position: fixed;
+    right: .5rem;
+    left: .5rem;
+    top: auto;
+    bottom: calc(var(--topbar-h) + .5rem);
+    min-width: unset;
+    width: auto;
+    border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-xl);
+  }
+  [dir="ltr"] .num-panel-menu { right: .5rem; left: .5rem; }
 }
