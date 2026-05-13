@@ -7,16 +7,19 @@
 @font-face {
   font-family: 'ThmanyahSans';
   src: url('thmanyahsans-Medium.otf') format('opentype');
-  font-weight: 500;
+  font-weight: 400 700;
+  font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'ThmanyahSerif';
   src: url('thmanyahseriftext-Medium.otf') format('opentype');
-  font-weight: 500;
+  font-weight: 400 700;
+  font-style: normal;
   font-display: swap;
 }
-@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;900&family=Tajawal:wght@300;400;500;700;800;900&display=swap');
+/* Google Fonts as fallback only */
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
 
 /* ══ DESIGN TOKENS ══ */
 :root {
@@ -89,11 +92,18 @@
   --t-spring: .4s cubic-bezier(.34,1.56,.64,1);
   --t-fast:   .12s ease;
 
-  /* Typography */
-  --font-sans:   'Cairo', 'ThmanyahSans', sans-serif;
-  --font-display:'Tajawal', 'ThmanyahSans', sans-serif;
-  --font-serif:  'ThmanyahSerif', 'Cairo', serif;
-  --num-size: 11px;
+  /* Typography — ThmanyahSans is primary */
+  --font-sans:   'ThmanyahSans', 'Cairo', sans-serif;
+  --font-display:'ThmanyahSans', 'Cairo', sans-serif;
+  --font-serif:  'ThmanyahSerif', sans-serif;
+  --font-num:    'ThmanyahSerif', 'ThmanyahSans', sans-serif;
+
+  /* Number label defaults */
+  --num-size:       12px;
+  --num-color:      rgba(255,255,255,.70);
+  --num-color-fill: rgba(0,0,0,.35);
+  --num-weight:     700;
+  --num-visible:    1;    /* 1=show  0=hide */
 
   /* Sidebar */
   --sidebar-w: 240px;
@@ -756,13 +766,137 @@ select.inp { cursor: pointer; -webkit-appearance: none; appearance: none; }
 .sc-cust { background: var(--cust-color, #ff6b6b); border: none; }
 
 .shape-nl {
-  position: absolute; font-size: var(--num-size,11px);
-  color: rgba(255,255,255,.55); font-weight: 700;
-  line-height: 1; pointer-events: none;
-  font-family: var(--font-display);
+  position: absolute;
+  font-size:   var(--num-size, 12px);
+  color:       var(--num-color, rgba(255,255,255,.70));
+  font-weight: var(--num-weight, 700);
+  font-family: var(--font-num);
+  line-height: 1;
+  pointer-events: none;
+  transition: font-size .2s var(--t-spring), color .2s, opacity .15s;
+  opacity: var(--num-visible, 1);
+  text-shadow: 0 1px 3px rgba(0,0,0,.4);
+  letter-spacing: -.01em;
+  user-select: none;
 }
-.si.filled .shape-nl { color: rgba(0,0,0,.3); }
-.shape-grid:not(.nums-on) .shape-nl { display: none; }
+.si.filled .shape-nl {
+  color: var(--num-color-fill, rgba(0,0,0,.35));
+}
+/* When nums-on class is absent on grid, hide labels */
+.shape-grid:not(.nums-on) .shape-nl { opacity: 0; pointer-events: none; }
+
+/* ══ NUMBER CONTROLS PANEL ══ */
+.num-panel {
+  position: relative;
+}
+.num-panel-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--card);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-xl);
+  padding: .9rem;
+  min-width: 240px;
+  z-index: 200;
+  display: none;
+  animation: ctxMenu .22s var(--t-spring);
+}
+[dir="ltr"] .num-panel-menu { right: auto; left: 0; }
+.num-panel-menu.open { display: block; }
+
+.npm-title {
+  font-size: .65rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--muted);
+  margin-bottom: .65rem;
+}
+
+/* Size Slider */
+.npm-row { display: flex; align-items: center; gap: .6rem; margin-bottom: .65rem; }
+.npm-row-label { font-size: .68rem; font-weight: 600; color: var(--text2); width: 52px; flex-shrink: 0; }
+
+.npm-slider {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 99px;
+  background: var(--border2); outline: none; cursor: pointer;
+  transition: background .2s;
+}
+.npm-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 2px 8px rgba(32,214,168,.45);
+  cursor: pointer; transition: transform var(--t-spring);
+}
+.npm-slider::-webkit-slider-thumb:hover { transform: scale(1.25); }
+.npm-slider::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+.npm-slider-val {
+  font-size: .68rem; font-weight: 700; font-family: var(--font-num);
+  color: var(--accent); min-width: 28px; text-align: right;
+}
+[dir="ltr"] .npm-slider-val { text-align: left; }
+
+/* Preview box */
+.npm-preview {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: .5rem; margin-bottom: .65rem;
+  display: flex; align-items: center; justify-content: center;
+  gap: .5rem; flex-wrap: wrap;
+}
+.npm-prev-circle {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  position: relative; flex-shrink: 0;
+}
+.npm-prev-label {
+  font-family: var(--font-num);
+  font-weight: var(--num-weight, 700);
+}
+
+/* Color swatches for numbers */
+.npm-col-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.npm-col-sw {
+  width: 20px; height: 20px; border-radius: 50%;
+  cursor: pointer; border: 2px solid transparent;
+  transition: transform var(--t-spring), border-color .15s;
+  position: relative;
+}
+.npm-col-sw:hover { transform: scale(1.25); }
+.npm-col-sw.sel { border-color: var(--text); transform: scale(1.2); }
+/* special: white/black/custom */
+.npm-col-sw.white { background: rgba(255,255,255,.85); }
+.npm-col-sw.black { background: rgba(0,0,0,.75); }
+.npm-col-sw.dark  { background: rgba(0,0,0,.45); }
+.npm-col-sw.light { background: rgba(255,255,255,.45); }
+
+/* Fill-color toggle */
+.npm-col-label { font-size: .62rem; color: var(--muted); margin: .35rem 0 .2rem; font-weight: 600; }
+
+/* Weight toggles */
+.npm-weight-row { display: flex; gap: 4px; }
+.npm-wt {
+  flex: 1; padding: 4px 6px; border-radius: var(--r);
+  border: 1.5px solid var(--border); background: var(--bg3);
+  font-family: var(--font-num); font-size: .68rem; cursor: pointer;
+  text-align: center; transition: all .15s; color: var(--text2);
+}
+.npm-wt.sel { border-color: var(--accent); background: var(--accent-gl); color: var(--accent); }
+
+/* Visibility quick toggle */
+.npm-vis-row { display: flex; gap: 4px; margin-top: .55rem; }
+.npm-apply-btn {
+  flex: 1; padding: 6px; border-radius: var(--r);
+  background: var(--accent); color: #070a10;
+  border: none; font-family: var(--font-sans);
+  font-size: .7rem; font-weight: 700; cursor: pointer;
+  transition: background .15s, transform .1s;
+}
+.npm-apply-btn:hover { background: var(--accent2); }
+.npm-apply-btn:active { transform: scale(.96); }
 
 /* ══ EXAM TRACKER PAGE ══ */
 .exam-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }

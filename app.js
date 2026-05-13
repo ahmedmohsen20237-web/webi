@@ -322,10 +322,11 @@ const GridManager = (() => {
     if(!pg||!container) return;
     container.innerHTML='';
     container.style.setProperty('--gsz',gridSz+'px');
-    document.documentElement.style.setProperty('--num-size',(pg.numSize||11)+'px');
+    _applyNumVars(pg);
     const shape=pg.shape||'circle';
-    const CHUNK=80, frag=document.createDocumentFragment();
+    const CHUNK=80;
     function renderChunk(start) {
+      const frag=document.createDocumentFragment();
       const end=Math.min(start+CHUNK,pg.cells.length);
       for(let i=start;i<end;i++) frag.appendChild(_makeCell(pg.cells[i],i,shape,pg));
       container.appendChild(frag);
@@ -336,6 +337,16 @@ const GridManager = (() => {
     container.addEventListener('touchstart',()=>{_isScrolling=false;},{passive:true});
     container.addEventListener('touchmove',()=>{_isScrolling=true;clearTimeout(_scrollTimer);},{passive:true});
     container.addEventListener('touchend',()=>{_scrollTimer=setTimeout(()=>{_isScrolling=false;},200);},{passive:true});
+  }
+
+  /* Apply number CSS variables from page settings to :root */
+  function _applyNumVars(pg) {
+    const root=document.documentElement;
+    root.style.setProperty('--num-size',(pg.numSize||12)+'px');
+    root.style.setProperty('--num-color', pg.numColor||'rgba(255,255,255,.70)');
+    root.style.setProperty('--num-color-fill', pg.numColorFill||'rgba(0,0,0,.35)');
+    root.style.setProperty('--num-weight', pg.numWeight||'700');
+    root.style.setProperty('--num-visible', pg.showNums?'1':'0');
   }
 
   function _makeCell(val, i, shape, pg) {
