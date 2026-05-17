@@ -2,23 +2,17 @@
 <html lang="ar" dir="rtl" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>منجز — منصة الإنتاجية</title>
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-7F5E1V1XV8"></script>
-<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-7F5E1V1XV8');</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- ══════════════════════════════════
-     ONBOARDING SCREENS
-══════════════════════════════════ -->
-
-<!-- Name Screen -->
+<!-- ══ ONBOARDING ══ -->
 <div class="screen hidden" id="scrName">
   <div class="screen-card">
     <div class="screen-logo">✅</div>
-    <h2 class="screen-title">أهلاً بك في <span style="background:var(--g-accent);-webkit-background-clip:text;-webkit-text-fill-color:transparent">منجز</span></h2>
+    <h2 class="screen-title">أهلاً في <span style="background:var(--g-accent);-webkit-background-clip:text;-webkit-text-fill-color:transparent">منجز</span></h2>
     <p class="screen-sub">منصة الإنتاجية والدراسة — مهام، تقدم بصري، واختبارات</p>
     <div id="existingUsers" class="hidden">
       <label class="screen-label">👥 تابع من حيث توقفت</label>
@@ -33,7 +27,6 @@
   </div>
 </div>
 
-<!-- Mode Selection Screen -->
 <div class="screen hidden" id="scrMode">
   <div class="screen-card">
     <div class="screen-logo">🎯</div>
@@ -64,47 +57,41 @@
   </div>
 </div>
 
-<!-- ══════════════════════════════════
-     MAIN APP
-══════════════════════════════════ -->
+<!-- ══ MAIN APP ══ -->
 <div id="app">
 
-  <!-- Sidebar Backdrop (mobile) -->
   <div id="sidebar-backdrop" onclick="UI.closeMobileSidebar()"></div>
 
-  <!-- ── SIDEBAR ── -->
+  <!-- SIDEBAR -->
   <nav id="sidebar">
     <div class="sidebar-header">
       <div class="logo-mark">م</div>
       <div class="logo-text"><span>منجز</span></div>
     </div>
 
-    <!-- User Badge -->
     <div class="user-badge" onclick="UI.openModal('modalSwitchUser')">
       <div class="user-avatar" id="sbAvatar">م</div>
       <span class="user-name-text" id="sbUserName">المستخدم</span>
-      <span class="user-switch-icon">⇅</span>
+      <span style="font-size:.6rem;color:var(--muted)">⇅</span>
     </div>
 
-    <!-- Main Nav -->
     <div class="sidebar-section">
       <div class="sidebar-section-title">التنقل</div>
       <div class="nav-item active" data-view="home" onclick="UI.showView('home')">
         <span class="nav-icon">🏠</span>
-        <span class="nav-label" data-i18n="home">الرئيسية</span>
+        <span class="nav-label">الرئيسية</span>
       </div>
       <div class="nav-item" data-view="stats" onclick="UI.showView('stats')">
         <span class="nav-icon">📊</span>
-        <span class="nav-label" data-i18n="stats">الإحصائيات</span>
+        <span class="nav-label">الإحصائيات</span>
       </div>
       <div class="nav-item" data-view="achievements" onclick="UI.showView('achievements')">
         <span class="nav-icon">🏆</span>
-        <span class="nav-label" data-i18n="achievements">الإنجازات</span>
+        <span class="nav-label">الإنجازات</span>
       </div>
     </div>
 
-    <!-- Pages Nav -->
-    <div class="sidebar-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+    <div class="sidebar-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
       <div class="sidebar-section-title">المجلدات</div>
       <div id="pagesNav" style="overflow-y:auto;flex:1"></div>
       <div style="padding:.3rem .4rem">
@@ -115,22 +102,20 @@
       </div>
     </div>
 
-    <!-- Footer -->
     <div class="sidebar-footer">
       <button class="sb-footer-btn" id="themeBtn" onclick="UI.toggleTheme()" title="الوضع">🌙</button>
       <button class="sb-footer-btn" id="soundBtn" onclick="UI.toggleSound()" title="الصوت">🔊</button>
       <button class="sb-footer-btn lang-btn" id="langBtn" onclick="UI.toggleLang()" title="اللغة">EN</button>
-      <button class="sb-footer-btn" onclick="UI.toggleSidebar()" title="طي الشريط">⟨</button>
-      <button class="sb-footer-btn" onclick="Admin.tryLogin()" title="المدير">⚙</button>
+      <button class="sb-footer-btn" onclick="UI.openModal('modalCountdown')" title="عداد">⏱</button>
+      <button class="sb-footer-btn" onclick="UI.toggleSidebar()" title="طي">⟨</button>
+      <button class="sb-footer-btn" onclick="Admin.tryLogin()" title="مدير">⚙</button>
     </div>
   </nav>
 
-  <!-- ── MAIN CONTENT ── -->
+  <!-- MAIN -->
   <div id="main">
-
-    <!-- Topbar -->
     <header id="topbar">
-      <button class="btn btn-icon btn-sm btn-ghost" onclick="UI.toggleMobileSidebar()" style="display:none" id="menuBtn">☰</button>
+      <button class="btn btn-icon btn-sm btn-ghost" id="menuBtn" onclick="UI.toggleMobileSidebar()" style="display:none">☰</button>
       <div style="display:flex;flex-direction:column;flex:1;overflow:hidden">
         <span class="topbar-title" id="topbarTitle">الرئيسية</span>
         <span class="topbar-subtitle" id="topbarSub"></span>
@@ -139,22 +124,19 @@
         <button class="btn btn-icon btn-sm" onclick="UI.showView('home')">🏠</button>
       </div>
     </header>
-
-    <!-- Content Area -->
     <main id="content"></main>
-
-  </div><!-- /main -->
+  </div>
 
 </div><!-- /app -->
 
 <!-- Countdown Widget -->
-<div class="countdown-widget" id="cdWidget" onclick="UI.openModal('modalCountdown')">
+<div class="countdown-widget" id="cdWidget">
   <span>⏱</span>
   <span class="cd-time" id="cdTime">00:00:00</span>
   <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();Countdown.stop()" style="padding:2px 7px;font-size:.6rem">✕</button>
 </div>
 
-<!-- FAB (mobile) -->
+<!-- FAB mobile -->
 <button id="mobile-menu-btn" onclick="UI.toggleMobileSidebar()">☰</button>
 
 <!-- Celebration -->
@@ -163,9 +145,7 @@
   <div class="cel-msg" id="celMsg">أحسنت!</div>
 </div>
 
-<!-- ══════════════════════════════════
-     SMART SESSION PANEL
-══════════════════════════════════ -->
+<!-- Smart Session Panel -->
 <div class="session-panel hidden" id="sessionPanel">
   <div class="session-card">
     <div class="session-header">
@@ -177,15 +157,15 @@
       <div class="sp-label"><span>التقدم</span><span id="sessionProgress">0 / 0</span></div>
     </div>
     <div class="session-exam-card">
-      <div class="ec-num sec-num" id="sessionNum">1</div>
+      <div class="sec-num" id="sessionNum">1</div>
       <div class="sec-title" id="sessionTitle">عنوان الاختبار</div>
       <div class="sec-note" id="sessionNote">ملاحظات...</div>
-      <div class="ec-score sec-score" id="sessionScore">—</div>
+      <div id="sessionScore" style="font-size:.72rem;font-weight:700;color:var(--accent);margin-top:.3rem">—</div>
     </div>
     <div class="session-actions">
-      <button class="btn btn-primary" onclick="SmartSession.openCurrent()">🔗 فتح الاختبار</button>
+      <button class="btn btn-primary" onclick="SmartSession.openCurrent()">🔗 فتح</button>
       <button class="btn btn-sm" onclick="SmartSession.markDone()">✅ أكملت</button>
-      <button class="btn btn-sm" onclick="UI.openModal('modalSessionScore')">📝 أدخل النتيجة</button>
+      <button class="btn btn-sm" onclick="UI.openModal('modalSessionScore')">📝 نتيجة</button>
       <button class="btn btn-sm btn-ghost" onclick="SmartSession.skip()">⟩ التالي</button>
     </div>
   </div>
@@ -200,8 +180,9 @@
   <div class="modal">
     <h3>🔐 لوحة التحكم</h3>
     <label>كلمة سر المدير</label>
-    <input type="password" class="inp" id="adminPwInp" maxlength="40" onkeydown="if(event.key==='Enter')Admin.confirmLogin()">
-    <div id="adminErr" style="font-size:.68rem;color:var(--red);display:none;margin-top:-.3rem">❌ كلمة السر غير صحيحة</div>
+    <input type="password" class="inp" id="adminPwInp" maxlength="40"
+      onkeydown="if(event.key==='Enter')Admin.confirmLogin()">
+    <div id="adminErr" style="font-size:.68rem;color:var(--red);display:none">❌ كلمة السر غير صحيحة</div>
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalAdminLogin')">إلغاء</button>
       <button class="btn btn-primary" onclick="Admin.confirmLogin()">دخول</button>
@@ -233,13 +214,14 @@
       </select>
     </div>
     <div id="npExamOpts" class="hidden">
-      <div class="modal-hint">📝 مجلد مخصص لتتبع اختبارات Google Forms والاختبارات القصيرة والواجبات</div>
+      <div class="modal-hint">📝 مخصص لتتبع اختبارات Google Forms والاختبارات القصيرة</div>
     </div>
     <label>هدف يومي (اختياري)</label>
     <input type="number" class="inp" id="npGoal" value="0" min="0">
     <div class="modal-divider"></div>
     <label>🔒 رقم سري (اختياري)</label>
-    <input type="password" class="inp" id="npPin" placeholder="اتركه فارغاً للتخطي" oninput="document.getElementById('npPinExtra').style.display=this.value?'block':'none'">
+    <input type="password" class="inp" id="npPin" placeholder="اتركه فارغاً للتخطي"
+      oninput="document.getElementById('npPinExtra').style.display=this.value?'block':'none'">
     <div id="npPinExtra" style="display:none">
       <label>📖 كلمة استرداد</label>
       <input type="text" class="inp" id="npBook" placeholder="كلمة سرية للاسترداد...">
@@ -255,9 +237,9 @@
 <div class="modal-overlay" id="modalPin">
   <div class="modal">
     <h3>🔒 كلمة السر</h3>
-    <label>الرقم السري</label>
-    <input type="password" class="inp" id="pinVal" maxlength="20" onkeydown="if(event.key==='Enter')Pages.confirmPin()">
-    <div id="pinErr" style="font-size:.68rem;color:var(--red);display:none;margin-top:-.3rem">❌ كلمة السر غير صحيحة</div>
+    <input type="password" class="inp" id="pinVal" maxlength="20"
+      onkeydown="if(event.key==='Enter')Pages.confirmPin()">
+    <div id="pinErr" style="font-size:.68rem;color:var(--red);display:none">❌ كلمة السر غير صحيحة</div>
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalPin')">إلغاء</button>
       <button class="btn btn-primary" onclick="Pages.confirmPin()">دخول</button>
@@ -265,26 +247,26 @@
   </div>
 </div>
 
-<!-- Task Edit / Add -->
+<!-- Task Add/Edit -->
 <div class="modal-overlay" id="modalTask">
   <div class="modal">
     <h3 id="taskModalTitle">+ مهمة جديدة</h3>
     <label>اسم المهمة *</label>
     <input type="text" class="inp" id="etName" placeholder="وصف المهمة..." maxlength="120">
     <label>الوصف (اختياري)</label>
-    <textarea class="inp" id="etDesc" placeholder="ملاحظات إضافية..." style="min-height:64px"></textarea>
+    <textarea class="inp" id="etDesc" placeholder="ملاحظات..." style="min-height:60px"></textarea>
     <label>الأولوية</label>
     <div class="priority-row">
-      <button class="prio-btn sel-low" data-p="low" onclick="Tasks.selectPrio('low')">🟢 منخفضة</button>
-      <button class="prio-btn" data-p="med" onclick="Tasks.selectPrio('med')">🟡 متوسطة</button>
-      <button class="prio-btn" data-p="high" onclick="Tasks.selectPrio('high')">🔴 عالية</button>
+      <button class="prio-btn sel-low" data-p="low"  onclick="Tasks.selectPrio('low')">🟢 منخفضة</button>
+      <button class="prio-btn"         data-p="med"  onclick="Tasks.selectPrio('med')">🟡 متوسطة</button>
+      <button class="prio-btn"         data-p="high" onclick="Tasks.selectPrio('high')">🔴 عالية</button>
     </div>
     <label>الفئة (اختياري)</label>
     <input type="text" class="inp" id="etCat" placeholder="مثال: دراسة، عمل..." maxlength="30">
     <label>تاريخ الاستحقاق (اختياري)</label>
     <input type="date" class="inp" id="etDue">
     <div class="modal-row">
-      <button class="btn btn-danger btn-sm" id="deleteTaskBtn" onclick="Tasks.deleteFromModal()" style="display:none">🗑 حذف</button>
+      <button class="btn btn-danger btn-sm" id="deleteTaskBtn" onclick="Tasks.deleteFromModal()" style="display:none">🗑</button>
       <button class="btn" onclick="UI.closeModal('modalTask')">إلغاء</button>
       <button class="btn btn-primary" onclick="Tasks.saveEdit()">حفظ</button>
     </div>
@@ -295,8 +277,9 @@
 <div class="modal-overlay" id="modalBulkTasks">
   <div class="modal modal-wide">
     <h3>📋 إضافة مهام دفعةً واحدة</h3>
-    <div class="modal-hint">أدخل كل مهمة في سطر منفصل</div>
-    <textarea class="inp" id="bulkText" style="min-height:150px" placeholder="مهمة 1&#10;مهمة 2&#10;مهمة 3..."></textarea>
+    <div class="modal-hint">كل مهمة في سطر منفصل</div>
+    <textarea class="inp" id="bulkText" style="min-height:140px"
+      placeholder="مهمة 1&#10;مهمة 2&#10;مهمة 3..."></textarea>
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalBulkTasks')">إلغاء</button>
       <button class="btn btn-primary" onclick="Tasks.confirmBulkAdd()">إضافة ✨</button>
@@ -304,17 +287,17 @@
   </div>
 </div>
 
-<!-- Exam Add / Edit -->
+<!-- Exam Add/Edit -->
 <div class="modal-overlay" id="modalExam">
   <div class="modal">
     <h3 id="examModalTitle">+ اختبار جديد</h3>
-    <label>العنوان *</label>
+    <label>العنوان</label>
     <input type="text" class="inp" id="eeTitle" placeholder="عنوان الاختبار..." maxlength="80">
     <label>رابط Google Forms</label>
     <input type="url" class="inp" id="eeLink" placeholder="https://forms.gle/...">
     <label>ملاحظات (اختياري)</label>
-    <textarea class="inp" id="eeNotes" placeholder="موضوعات، تذكيرات..." style="min-height:64px"></textarea>
-    <label>النتيجة (اختياري، 0-100)</label>
+    <textarea class="inp" id="eeNotes" placeholder="موضوعات، تذكيرات..." style="min-height:60px"></textarea>
+    <label>النتيجة (0–100)</label>
     <input type="number" class="inp" id="eeScore" placeholder="مثال: 85" min="0" max="100">
     <label>الصعوبة</label>
     <select class="inp" id="eeDiff">
@@ -323,7 +306,7 @@
       <option value="hard">🔴 صعب</option>
     </select>
     <div class="modal-row">
-      <button class="btn btn-danger btn-sm" id="deleteExamBtn" onclick="Exams.deleteFromModal()" style="display:none">🗑 حذف</button>
+      <button class="btn btn-danger btn-sm" id="deleteExamBtn" onclick="Exams.deleteFromModal()" style="display:none">🗑</button>
       <button class="btn" onclick="UI.closeModal('modalExam')">إلغاء</button>
       <button class="btn btn-primary" onclick="Exams.saveExam()">حفظ</button>
     </div>
@@ -334,9 +317,14 @@
 <div class="modal-overlay" id="modalBulkImport">
   <div class="modal modal-wide">
     <h3>📥 استيراد اختبارات دفعي</h3>
-    <div class="modal-hint">أدخل كل رابط في سطر منفصل.<br>يمكنك إضافة عنوان بعد الرابط مفصولاً بـ <strong>|</strong><br><code style="font-size:.62rem;color:var(--accent)">https://forms.gle/... | الوحدة الأولى</code></div>
+    <div class="modal-hint">
+      كل رابط في سطر منفصل.<br>
+      يمكن إضافة عنوان بعد الرابط مفصولاً بـ <strong>|</strong><br>
+      <code style="font-size:.6rem;color:var(--accent)">https://forms.gle/... | اسم الاختبار</code>
+    </div>
     <div class="bulk-import-area" id="bulkDropArea">اسحب ملف CSV هنا أو انقر للاختيار</div>
-    <textarea class="inp" id="bulkImportText" style="min-height:140px" placeholder="https://forms.gle/abc | اختبار الفصل الأول&#10;https://forms.gle/xyz | مراجعة الوحدة 2&#10;https://forms.gle/def"></textarea>
+    <textarea class="inp" id="bulkImportText" style="min-height:120px"
+      placeholder="https://forms.gle/abc | اختبار الفصل الأول&#10;https://forms.gle/xyz | مراجعة الوحدة 2"></textarea>
     <input type="hidden" id="bulkImportPgId">
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalBulkImport')">إلغاء</button>
@@ -348,12 +336,15 @@
 <!-- Session Score -->
 <div class="modal-overlay" id="modalSessionScore">
   <div class="modal">
-    <h3>📝 إدخال النتيجة</h3>
-    <label>النتيجة (0-100)</label>
+    <h3>📝 نتيجة الاختبار</h3>
+    <label>النتيجة (0–100)</label>
     <input type="number" class="inp" id="sessionScoreInp" placeholder="85" min="0" max="100">
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalSessionScore')">إلغاء</button>
-      <button class="btn btn-primary" onclick="SmartSession.markDone(document.getElementById('sessionScoreInp').value);UI.closeModal('modalSessionScore')">تأكيد ✅</button>
+      <button class="btn btn-primary"
+        onclick="SmartSession.markDone(document.getElementById('sessionScoreInp').value);UI.closeModal('modalSessionScore')">
+        تأكيد ✅
+      </button>
     </div>
   </div>
 </div>
@@ -365,7 +356,7 @@
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
       <div><label>ساعات</label><input type="number" class="inp" id="cdH" value="0" min="0" max="23"></div>
       <div><label>دقائق</label><input type="number" class="inp" id="cdM" value="25" min="0" max="59"></div>
-      <div><label>ثواني</label><input type="number" class="inp" id="cdS" value="0" min="0" max="59"></div>
+      <div><label>ثواني</label><input type="number" class="inp" id="cdS" value="0"  min="0" max="59"></div>
     </div>
     <div style="display:flex;gap:5px;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="cdPreset(0,5,0)">5 دق</button>
@@ -381,7 +372,7 @@
   </div>
 </div>
 
-<!-- Goal Modal -->
+<!-- Goal -->
 <div class="modal-overlay" id="modalGoal">
   <div class="modal">
     <h3>🎯 الهدف اليومي</h3>
@@ -390,7 +381,7 @@
     <label id="goalStartLabel" style="display:none">احتساب التقدم السابق؟</label>
     <div class="goal-radio-row" id="goalStartRow" style="display:none">
       <div class="goal-radio sel" data-gs="include" onclick="Goals.selectStart('include',this)">✅ احتساب السابق</div>
-      <div class="goal-radio" data-gs="fresh" onclick="Goals.selectStart('fresh',this)">🔄 من الصفر</div>
+      <div class="goal-radio"     data-gs="fresh"   onclick="Goals.selectStart('fresh',this)">🔄 من الصفر</div>
     </div>
     <div class="modal-hint hidden" id="goalHint"></div>
     <div class="modal-row">
@@ -418,20 +409,21 @@
 <div class="modal-overlay" id="modalSwitchUser">
   <div class="modal">
     <h3>👥 تبديل المستخدم</h3>
-    <div id="switchUserList" style="display:flex;flex-direction:column;gap:.4rem;max-height:220px;overflow-y:auto"></div>
+    <div id="switchUserList"
+      style="display:flex;flex-direction:column;gap:.4rem;max-height:220px;overflow-y:auto">
+    </div>
     <div class="modal-divider"></div>
-    <button class="btn" style="width:100%" onclick="UI.closeModal('modalSwitchUser');document.getElementById('scrName').classList.remove('hidden')">+ مستخدم جديد</button>
+    <button class="btn" style="width:100%"
+      onclick="UI.closeModal('modalSwitchUser');document.getElementById('scrName').classList.remove('hidden')">
+      + مستخدم جديد
+    </button>
     <div class="modal-row">
       <button class="btn" onclick="UI.closeModal('modalSwitchUser')">إلغاء</button>
     </div>
   </div>
 </div>
 
-<!-- ══════════════════════════════════
-     BOTTOM SHEETS
-══════════════════════════════════ -->
-
-<!-- Page Settings Sheet -->
+<!-- ══ SHEETS ══ -->
 <div class="sheet-overlay" id="sheetPageSettings">
   <div class="sheet">
     <div class="sheet-handle"></div>
@@ -439,12 +431,13 @@
     <div class="sheet-row">
       <span class="sr-icon">📄</span>
       <span class="sr-label">الاسم</span>
-      <input type="text" class="inp" id="sheetPageName" maxlength="40" style="max-width:180px;flex:none">
+      <input type="text" class="inp" id="sheetPageName" maxlength="40"
+        style="max-width:180px;flex:none">
     </div>
     <div class="sheet-row">
       <span class="sr-icon">📊</span>
       <span class="sr-label">الإنجاز</span>
-      <span class="sheet-row-meta" id="sheetPageStats">—</span>
+      <span style="font-size:.7rem;color:var(--muted)" id="sheetPageStats">—</span>
     </div>
     <div class="sheet-row">
       <span class="sr-icon">🎯</span>
@@ -454,7 +447,10 @@
     <div class="sheet-row">
       <span class="sr-icon">⏱</span>
       <span class="sr-label">عداد تنازلي</span>
-      <span class="sr-action" onclick="document.getElementById('sheetPageSettings').classList.remove('open');UI.openModal('modalCountdown')">فتح</span>
+      <span class="sr-action"
+        onclick="document.getElementById('sheetPageSettings').classList.remove('open');UI.openModal('modalCountdown')">
+        فتح
+      </span>
     </div>
     <div class="sheet-row">
       <span class="sr-icon">📤</span>
@@ -467,73 +463,39 @@
       <span class="sr-action" style="color:var(--red)" onclick="confirmDeletePage()">حذف</span>
     </div>
     <div style="display:flex;gap:.5rem;margin-top:.5rem">
-      <button class="btn" style="flex:1" onclick="document.getElementById('sheetPageSettings').classList.remove('open')">إلغاء</button>
+      <button class="btn" style="flex:1"
+        onclick="document.getElementById('sheetPageSettings').classList.remove('open')">إلغاء</button>
       <button class="btn btn-primary" style="flex:1" onclick="UI.savePageSettings()">حفظ</button>
     </div>
   </div>
 </div>
 
 <script src="app.js"></script>
-
-<!-- Extra inline helpers -->
 <script>
-// Switch user modal population
-document.getElementById('modalSwitchUser').addEventListener('click', function(e){
-  if(e.target===this){
-    const list=document.getElementById('switchUserList');
-    const users=UserManager.getUsers();
-    list.innerHTML=users.map(u=>`<div class="user-list-item" onclick="UserManager.switchUser('${u.id}');UI.closeModal('modalSwitchUser');UI.init()">
-      <div class="uli-avatar" style="background:${u.color}">${u.avatar}</div>
-      <div><div class="uli-name">${esc(u.name)}</div><div class="uli-meta">${(u.pages||[]).length} مجلد</div></div>
-      <div class="uli-arrow">←</div>
-    </div>`).join('');
-  }
+/* ── Switch user modal population ── */
+document.getElementById('modalSwitchUser').addEventListener('click', function(e) {
+  if (e.target !== this) return;
+});
+document.querySelector('.user-badge')?.addEventListener('click', () => {
+  const list = document.getElementById('switchUserList');
+  if (!list) return;
+  const users = UserManager.getUsers();
+  list.innerHTML = users.map(u =>
+    `<div class="user-list-item" onclick="UserManager.switchUser('${u.id}');UI.closeModal('modalSwitchUser');UI.init()">
+       <div class="uli-avatar" style="background:${u.color}">${u.avatar}</div>
+       <div><div class="uli-name">${u.name}</div><div class="uli-meta">${(u.pages||[]).length} مجلد</div></div>
+       <div class="uli-arrow">←</div>
+     </div>`
+  ).join('') || '<div style="text-align:center;color:var(--muted);font-size:.72rem;padding:.8rem">لا يوجد مستخدمون آخرون</div>';
 });
 
-// Open switch user modal (populate on open)
-const origOpenModal=UI.openModal.bind(UI);
-document.getElementById('modalSwitchUser').addEventListener('transitionend',()=>{});
-document.querySelector('[onclick*="modalSwitchUser"]')?.addEventListener('click',()=>{
-  const list=document.getElementById('switchUserList');
-  const users=UserManager.getUsers();
-  list.innerHTML=users.map(u=>`<div class="user-list-item" onclick="UserManager.switchUser('${u.id}');UI.closeModal('modalSwitchUser');UI.init()">
-    <div class="uli-avatar" style="background:${u.color}">${esc(u.avatar)}</div>
-    <div><div class="uli-name">${esc(u.name)}</div><div class="uli-meta">${(u.pages||[]).length} مجلد</div></div>
-    <div class="uli-arrow">←</div>
-  </div>`).join('');
-});
-
-// Confirm delete page
-function confirmDeletePage(){
-  const pg=Pages.getCurrent(); if(!pg) return;
-  if(!confirm(`حذف "${pg.name}" نهائياً؟`)) return;
-  Pages.deletePage(pg.id);
-  document.getElementById('sheetPageSettings').classList.remove('open');
-  UI.renderPagesNav(); UI.showView('home');
-  UI.toast('🗑 تم حذف المجلد');
-}
-
-// Bulk import drag-and-drop (CSV)
-const dropArea=document.getElementById('bulkDropArea');
-if(dropArea){
-  dropArea.addEventListener('dragover',e=>{e.preventDefault();dropArea.style.borderColor='var(--accent)';});
-  dropArea.addEventListener('dragleave',()=>{dropArea.style.borderColor='';});
-  dropArea.addEventListener('drop',e=>{
-    e.preventDefault(); dropArea.style.borderColor='';
-    const file=e.dataTransfer.files[0]; if(!file) return;
-    const reader=new FileReader();
-    reader.onload=ev=>{ document.getElementById('bulkImportText').value=ev.target.result; };
-    reader.readAsText(file);
-  });
-  dropArea.addEventListener('click',()=>{
-    const inp=document.createElement('input'); inp.type='file'; inp.accept='.csv,.txt';
-    inp.onchange=e=>{ const file=e.target.files[0]; if(!file) return; const r=new FileReader(); r.onload=ev=>{ document.getElementById('bulkImportText').value=ev.target.result; }; r.readAsText(file); };
-    inp.click();
-  });
-}
-
-// Show mobile menu button
-document.getElementById('menuBtn').style.display='';
+/* ── Close modals/sheets on overlay click ── */
+document.querySelectorAll('.modal-overlay').forEach(o =>
+  o.addEventListener('click', e => { if (e.target === o) o.classList.remove('open'); })
+);
+document.querySelectorAll('.sheet-overlay').forEach(o =>
+  o.addEventListener('click', e => { if (e.target === o) o.classList.remove('open'); })
+);
 </script>
 </body>
 </html>
